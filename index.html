@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apogee</title>
+<link rel="preload" href="assets/fonts/barlowcond-500.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<!-- ───────── title ───────── -->
+<div id="title-ui" class="ui" hidden>
+  <div class="scrim-left"></div>
+  <div id="title-box">
+    <svg id="mark" viewBox="0 0 520 150" aria-label="Apogee">
+      <ellipse cx="236" cy="96" rx="232" ry="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.45"/>
+      <circle cx="236" cy="52" r="5" fill="currentColor"/>
+      <text x="0" y="128" textLength="472" lengthAdjust="spacing">APOGEE</text>
+    </svg>
+    <p class="tag">Build a rocket. Reach orbit. Come home.</p>
+    <nav>
+      <button id="t-build" class="primary">Build a rocket</button>
+      <button id="t-continue" hidden></button>
+      <button id="t-fly">Quick launch</button>
+      <button id="t-uni"></button>
+      <button id="t-world"></button>
+      <button id="t-sound" class="snd"></button>
+    </nav>
+    <div id="t-badges"></div>
+  </div>
+  <div id="t-unis" class="card" hidden></div>
+  <div id="t-credit">Earth imagery · Solar System Scope · CC BY 4.0</div>
+</div>
+
+<!-- ───────── hangar ───────── -->
+<div id="build-ui" class="ui" hidden>
+  <header class="topline">
+    <div class="left">
+      <button id="btn-menu" class="link" title="Back to the title screen">‹</button>
+      <input id="rocket-name" spellcheck="false" maxlength="40" title="Rocket name">
+    </div>
+    <div class="right">
+      <button id="btn-undo" class="link" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="btn-new" class="link" title="Start from nothing">New</button>
+      <button id="btn-save" class="link" title="Save in this browser">Save</button>
+      <button id="btn-load" class="link" title="Open a saved or example rocket">Load</button>
+      <span class="rule-v"></span>
+      <label class="world"><select id="planet" title="Which world to launch from">
+        <option value="compact">Small planet</option>
+        <option value="real">Real-size Earth</option>
+      </select></label>
+      <label class="world"><select id="launch-time" title="Time of day at the pad">
+        <option value="6.15">Dawn</option>
+        <option value="7.75">Morning</option>
+        <option value="12">Noon</option>
+        <option value="17.2">Golden hour</option>
+        <option value="18.35">Dusk</option>
+        <option value="22">Night</option>
+      </select></label>
+      <button id="btn-launch" class="solid">Launch</button>
+    </div>
+  </header>
+
+  <aside id="shelf">
+    <div id="cats"></div>
+    <div id="partlist"></div>
+    <div id="shelf-trash">Drop here to remove</div>
+  </aside>
+  <div id="tools">
+    <button id="btn-sym" class="link" title="Place copies around the rocket (X)">Symmetry ×1</button>
+    <button id="btn-snap" class="link on" title="Snap angles to 15° (C)">Angle snap</button>
+    <button id="btn-see" class="link" title="See into fairings and interstages, and build inside them (V)">See-through shells</button>
+  </div>
+
+  <aside id="stagecol">
+    <div class="cap"><span>Staging</span><button id="btn-autostage" class="link" title="Work out staging automatically">Auto</button></div>
+    <div id="staging"></div>
+  </aside>
+
+  <div id="bstrip">
+    <div id="hint"></div>
+    <div id="warns"></div>
+    <div id="stats"></div>
+  </div>
+  <div id="part-tip" hidden></div>
+  <div id="load-menu" hidden></div>
+</div>
+
+<!-- ───────── flight ───────── -->
+<div id="flight-ui" class="ui" hidden>
+  <div class="scrim-top"></div>
+  <div class="scrim-bottom"></div>
+  <header class="topline">
+    <div class="left">
+      <button id="f-revert" class="link" title="Back to the hangar">‹ Hangar</button>
+      <button id="f-restart" class="link">Restart</button>
+      <button id="f-map" class="link" title="Orbit map (M)">Map</button>
+      <button id="f-data-btn" class="link" title="Full telemetry (I)">Data</button>
+      <button id="f-vessels-btn" class="link" title="Every craft in this universe (V)">Craft</button>
+      <button id="f-help-btn" class="link" title="Controls (H)">Help</button>
+      <button class="link snd"></button>
+    </div>
+    <div class="right">
+      <span id="f-time">T+ 00:00</span>
+      <span id="f-warpbox"><button id="f-warp-down" class="link" title="Slower (,)">‹</button><span id="f-warp">1×</span><button id="f-warp-up" class="link" title="Faster (.)">›</button></span>
+    </div>
+  </header>
+
+  <div id="f-goal">
+    <div id="f-goal-t"></div>
+    <div id="f-goal-bar"><i></i></div>
+    <div id="f-coach"></div>
+  </div>
+
+  <div id="f-left" hidden></div>
+  <div id="f-fuel"></div>
+
+  <div id="f-stagecol">
+    <div id="f-stages"></div>
+    <button id="f-stage-btn" class="solid"><b>Launch</b><small>Space</small></button>
+  </div>
+
+  <div id="f-bottom">
+    <div id="f-orbit"></div>
+    <div id="f-cluster">
+      <div id="f-throt">
+        <div id="f-throttle" title="Throttle — drag, or Shift / Ctrl"><div id="f-throttle-fill"></div><div id="f-throttle-knob"></div></div>
+        <span id="f-thr-txt">100</span>
+      </div>
+      <div class="read r"><small>Speed</small><b id="f-vel">0</b></div>
+      <div id="f-ball"><canvas id="navball" width="344" height="344"></canvas></div>
+      <div class="read"><small>Height</small><b id="f-alt">0</b></div>
+    </div>
+    <div id="f-sas"></div>
+  </div>
+
+  <div id="f-vessels" hidden></div>
+  <div id="f-flash"></div>
+  <div id="f-msgs"></div>
+  <div id="f-big"></div>
+  <div id="f-labels"></div>
+  <div id="f-help" class="card" hidden></div>
+  <div id="f-end" class="card" hidden></div>
+</div>
+
+<div id="boot"><span>Apogee</span></div>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

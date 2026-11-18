@@ -1,0 +1,161 @@
+// Real 3D bushes near the camera, standing exactly where the ground shader paints them from afar.
+//
+// · Placement is the shared function in bushes.js, on a 7 m grid in the launch site's tangent frame, so the
+//   lit disc you see from 1 km and the shrub you fly past at 50 m are the same bush.
+// · A window of G×G cells follows the camera; a small pass works out, per cell, whether a bush grows there,
+//   its size, and where it stands on the terrain (relative to the window, so float precision holds).
+// · One instanced draw renders them all; empty cells collapse to nothing. Beyond ~240 m they shrink away
+//   and the ground's painted bushes take over at the same spots.
+// · Each bush is a cluster of lumpy lobes with soft normals, leaf-clump shading, darker inside and below,
+//   and it casts a real shadow.
+import * as THREE from '../vendor/three.module.js';
+import { mergeGeometries, mergeVertices } from '../vendor/jsm/utils/BufferGeometryUtils.js';
+import { TERRAIN_GLSL, terrainUniforms } from './terrain.js';
+import { BUSH_GLSL, BUSH_CELL } from './bushes.js';
+
+const G = 80;                 // cells across the window (80 × 7 m ≈ 560 m)
+const FAR = 240;              // the 3D bushes are gone by here; the ground's painted ones are in
+
+function bushGeometry() {
+  // unit bush: about 1 m in radius, base at y = 0; a few overlapping lobes, flattened underneath
+  const lobes = [[0, 0.5, 0, 0.62], [0.42, 0.38, 0.18, 0.46], [-0.36, 0.4, 0.28, 0.44], [0.08, 0.36, -0.44, 0.45], [-0.2, 0.78, -0.1, 0.38]];
+  const parts = lobes.map(([x, y, z, r], k) => {
+    const g = new THREE.IcosahedronGeometry(r, 2).toNonIndexed();
+    const p = g.attributes.position, n = g.attributes.normal;
+    for (let i = 0; i < p.count; i++) {
+      let px = p.getX(i), py = p.getY(i), pz = p.getZ(i);
+      const l = 1 + 0.14 * Math.sin(px * 17 + k * 3 + py * 11) * Math.cos(pz * 15 - py * 7 + k);
+      px *= l; py *= l; pz *= l;
+      let wy = y + py; if (wy < 0.02) wy = 0.02 + (wy - 0.02) * 0.15;       // squashed against the ground
+      p.setXYZ(i, x + px, wy, z + pz);
+      // soft normals: half the lobe's own, half from the bush's centre, so it shades as one mass of leaves
+      const cx = x + px, cy = wy - 0.45, cz = z + pz, cl = Math.hypot(cx, cy, cz) || 1, ol = Math.hypot(px, py, pz) || 1;
+      n.setXYZ(i, px / ol * 0.5 + cx / cl * 0.5, py / ol * 0.5 + cy / cl * 0.5, pz / ol * 0.5 + cz / cl * 0.5);
+    }
+    g.deleteAttribute('uv');
+    return g;
+  });
+  const g = mergeVertices(mergeGeometries(parts), 1e-4);
+  g.computeBoundingSphere();
+  return g;
+}
+
+export class Scatter {
+  constructor(renderer, terrain) {
+    this.renderer = renderer; this.terrain = terrain;
+    this.rt = new THREE.WebGLRenderTarget(G, G, { type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false, generateMipmaps: false });
+    this.key = '';
+    const site = terrain.site.clone().normalize();
+    this.sE = new THREE.Vector3(0, 1, 0).cross(site).normalize(); this.sN = new THREE.Vector3().crossVectors(site, this.sE); this.site = site;
+    // --- placement pass ---
+    this.pU = { ...terrainUniforms(terrain.R, terrain.A, terrain.site, terrain.ctl), uCell: { value: new THREE.Vector2() }, uXc: { value: new THREE.Vector2() }, uSE: { value: this.sE }, uSN: { value: this.sN } };
+    const pass = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+      uniforms: this.pU, depthTest: false, depthWrite: false,
+      vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: /* glsl */`
+        precision highp float; precision highp int;
+        ${TERRAIN_GLSL}
+        ${BUSH_GLSL}
+        uniform vec2 uCell, uXc; uniform vec3 uSE, uSN;
+        void main() {
+          ivec2 c = ivec2(uCell) + ivec2(gl_FragCoord.xy) - ${G / 2};
+          float dens = bushDensity((vec2(c) + 0.5) * ${BUSH_CELL.toFixed(1)});
+          vec2 bp; float id;
+          float r = dens > 0.0 ? bushAt(c, dens, bp, id) : 0.0;
+          if (r <= 0.0) { gl_FragColor = vec4(0.0); return; }
+          float R = uTR, x = bp.x, y = bp.y, q = x * x + y * y, qc = dot(uXc, uXc);
+          float zs = sqrt(R * R - q), zc = sqrt(R * R - qc);
+          vec3 dir = normalize(uTSite * zs + uSE * x + uSN * y);
+          float H = terrainH(dir);
+          if (H < -0.25) { gl_FragColor = vec4(0.0); return; }     // sea (the flattened launch area is exactly 0: land)
+          float dz = -(q - qc) / (zs + zc);                       // sphere drop, without cancellation
+          vec3 rel = uSE * (x - uXc.x) + uSN * (y - uXc.y) + uTSite * dz + dir * H;
+          gl_FragColor = vec4(rel, floor(r * 100.0) + id * 0.99);
+        }`,
+    }));
+    pass.frustumCulled = false;
+    this.passScene = new THREE.Scene(); this.passScene.add(pass);
+    this.passCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+
+    // --- the bushes ---
+    const geo = new THREE.InstancedBufferGeometry().copy(bushGeometry());
+    geo.instanceCount = G * G; geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
+    this.U = {
+      tScatter: { value: this.rt.texture }, uRelW: { value: new THREE.Vector3() }, uFrame: { value: new THREE.Matrix3() },
+      uCamScene: terrain.sceneU.uCamScene, uRotS: terrain.sceneU.uRotS, uCellV: { value: new THREE.Vector2() },
+    };
+    const vert = (sh) => {
+      Object.assign(sh.uniforms, this.U);
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', /* glsl */`#include <common>
+          ${BUSH_GLSL}
+          uniform sampler2D tScatter; uniform vec3 uRelW, uCamScene; uniform mat3 uFrame, uRotS; uniform vec2 uCellV;
+          varying vec3 vBush; varying vec4 vLeaf;`)
+        .replace('void main() {', /* glsl */`void main() {
+          ivec2 cg = ivec2(gl_InstanceID % ${G}, gl_InstanceID / ${G});
+          vec4 sc = texelFetch(tScatter, cg, 0);
+          float r = floor(sc.w) / 100.0, id = fract(sc.w) / 0.99;
+          ivec2 cell = ivec2(uCellV) + cg - ${G / 2};
+          float dist = length(uRelW + sc.xyz);
+          float sz = r * (1.0 - smoothstep(${FAR - 25}.0, ${FAR}.0, dist));
+          vec3 lp = position * vec3(sz, sz * (0.75 + 0.4 * bHash(cell, 101)), sz), ln = normal;
+          float an = id * 6.2832 * 7.0, ca = cos(an), sa = sin(an);
+          lp.xz = mat2(ca, sa, -sa, ca) * lp.xz; ln.xz = mat2(ca, sa, -sa, ca) * ln.xz;
+          if (sc.w <= 0.0) lp = vec3(0.0);
+          // the same colour the ground shader gives this bush from afar
+          vBush = mix(vec3(0.045, 0.085, 0.024), vec3(0.075, 0.095, 0.03), id) * (0.85 + 0.3 * bHash(cell, 99));
+          vBush *= mix(0.45, 1.1, smoothstep(0.0, 0.9, position.y));            // darker inside and underneath
+          vLeaf = vec4(position * 2.2 + id * 40.0, 1.0);
+          vec3 relT = uRelW + sc.xyz + uFrame * lp;`)
+        .replace('#include <beginnormal_vertex>', 'vec3 objectNormal = uRotS * (uFrame * normalize(ln));')
+        .replace('#include <begin_vertex>', 'vec3 transformed = uCamScene + uRotS * relT;');
+    };
+    // no specular: foliage seen edge-on would otherwise mirror the bright sky and turn grey
+    const mat = new THREE.MeshPhysicalMaterial({ roughness: 0.95, metalness: 0, specularIntensity: 0 });
+    mat.onBeforeCompile = (sh) => {
+      vert(sh);
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', `#include <common>
+          varying vec3 vBush; varying vec4 vLeaf;
+          float lh(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+          float ln3(vec3 x) { vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(mix(lh(i), lh(i + vec3(1, 0, 0)), f.x), mix(lh(i + vec3(0, 1, 0)), lh(i + vec3(1, 1, 0)), f.x), f.y),
+                       mix(mix(lh(i + vec3(0, 0, 1)), lh(i + vec3(1, 0, 1)), f.x), mix(lh(i + vec3(0, 1, 1)), lh(i + 1.0), f.x), f.y), f.z); }`)
+        .replace('#include <color_fragment>', `diffuseColor.rgb = vBush;
+          // leaf clumps at two sizes: the surface reads as foliage, not as a smooth blob
+          diffuseColor.rgb *= 0.5 + 0.8 * ln3(vLeaf.xyz * 3.0) * (0.55 + 0.45 * ln3(vLeaf.xyz * 9.0));`);
+    };
+    const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+    depth.onBeforeCompile = vert;
+    this.mesh = new THREE.Mesh(geo, mat);
+    this.mesh.customDepthMaterial = depth;
+    this.mesh.frustumCulled = false; this.mesh.castShadow = true; this.mesh.receiveShadow = true;
+    this.group = new THREE.Group(); this.group.add(this.mesh);
+  }
+
+  // camF: camera in the planet-fixed frame; agl: camera height above the ground. Returns whether it is shown.
+  update(camF, agl) {
+    const R = this.terrain.R, site = this.site;
+    const off = camF.clone().addScaledVector(site, -R);
+    const x = off.dot(this.sE), y = off.dot(this.sN);
+    const show = agl < 400 && Math.hypot(x, y) < 85000;
+    this.group.visible = show;
+    if (!show) return false;
+    const ic = Math.floor(x / BUSH_CELL), jc = Math.floor(y / BUSH_CELL);
+    const xc = (ic + 0.5) * BUSH_CELL, yc = (jc + 0.5) * BUSH_CELL;
+    const key = `${ic}/${jc}`;
+    if (key !== this.key) {
+      this.key = key;
+      this.pU.uCell.value.set(ic, jc); this.pU.uXc.value.set(xc, yc);
+      const r = this.renderer, prev = r.getRenderTarget();
+      r.setRenderTarget(this.rt); r.render(this.passScene, this.passCam); r.setRenderTarget(prev);
+      this.U.uCellV.value.set(ic, jc);
+    }
+    const zc = Math.sqrt(R * R - xc * xc - yc * yc);
+    const wref = site.clone().multiplyScalar(zc).addScaledVector(this.sE, xc).addScaledVector(this.sN, yc);
+    this.U.uRelW.value.copy(wref).sub(camF);
+    const up = wref.clone().normalize(), east = new THREE.Vector3(0, 1, 0).cross(up).normalize(), north = new THREE.Vector3().crossVectors(up, east);
+    this.U.uFrame.value.set(east.x, up.x, north.x, east.y, up.y, north.y, east.z, up.z, north.z);
+    return true;
+  }
+}

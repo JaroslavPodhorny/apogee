@@ -1,0 +1,10 @@
+{
+  "name": "apogee-rocket-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "python3 serve.py 5173",
+    "test": "node test/orbit.test.mjs compact 0"
+  }
+}
