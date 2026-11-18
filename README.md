@@ -2,6 +2,8 @@
 
 A 3D rocket game for the browser: build a rocket in the hangar, fly it to orbit, bring it home.
 
+**▶ Play it: https://jaroslavpodhorny.github.io/apogee/** (desktop browser with a keyboard and a decent GPU recommended)
+
 ## Run
 
 ```bash
