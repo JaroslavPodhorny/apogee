@@ -867,6 +867,9 @@ export class Flight {
       if (this.shake > 0.001) { const k = this.shake * c.dist * 0.02, t = this.time; cam.position.x += Math.sin(t * 43.1) * k; cam.position.y += Math.sin(t * 37.7 + 1) * k; cam.position.z += Math.sin(t * 29.3 + 2) * k * 0.6; this.shake *= Math.exp(-dt * 2.2); }
       if (a && a.thrust > 0 && !this.paused) { const k = Math.min(1, a.thrust / (a.mass * 18)) * (0.25 + 0.75 * Math.min(1, pl.pressure(a.alt))) * c.dist * 0.0022; const t = this.time; cam.position.x += Math.sin(t * 31.7) * Math.sin(t * 7.3) * k * 0.5; cam.position.y += Math.sin(t * 27.1 + 1.3) * Math.sin(t * 5.9) * k * 0.5; cam.position.z += Math.sin(t * 23.3 + 2.1) * k * 0.3; }
       cam.up.copy(up); cam.lookAt(0, 0, 0); cam.updateMatrixWorld();
+      // the ground and sky are drawn from where the camera really is, shake included: otherwise the rumble moves
+      // the rocket and the pad but not the ground under them, and the ground seems to slide about
+      cp.copy(this.origin).add(cam.position); camAlt = cp.length() - pl.R;
       this.sky.userData.viewH = Math.max(16, Math.round((this.ph || h) * (cp.length() - pl.R < 15000 / Math.sqrt(pl.atmK) ? (this.resScale >= 0.9 ? 1 : Math.min(1, (this.skyScale || 0.6) + 0.25)) : (this.skyScale || 0.6))));
       updateSky(this.sky, { camera: cam, camPos: cp, theta, planet: pl, sunDir: this.sunDir, siteFixed: world.siteFixed, time: world.t, volumetric: true });
       // site
