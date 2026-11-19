@@ -11,7 +11,7 @@
 import * as THREE from '../vendor/three.module.js';
 import { mergeGeometries, mergeVertices } from '../vendor/jsm/utils/BufferGeometryUtils.js';
 import { TERRAIN_GLSL, terrainUniforms } from './terrain.js';
-import { BUSH_GLSL, BUSH_CELL } from './bushes.js';
+import { BUSH_GLSL, BUSH_HASH, BUSH_CELL } from './bushes.js';
 
 const G = 80;                 // cells across the window (80 × 7 m ≈ 560 m)
 const FAR = 240;              // the 3D bushes are gone by here; the ground's painted ones are in
@@ -66,7 +66,7 @@ export class Scatter {
           float R = uTR, x = bp.x, y = bp.y, q = x * x + y * y, qc = dot(uXc, uXc);
           float zs = sqrt(R * R - q), zc = sqrt(R * R - qc);
           vec3 dir = normalize(uTSite * zs + uSE * x + uSN * y);
-          float H = terrainH(dir);
+          float H = terrainHd(dir, 1.0);
           if (H < -0.25) { gl_FragColor = vec4(0.0); return; }     // sea (the flattened launch area is exactly 0: land)
           float dz = -(q - qc) / (zs + zc);                       // sphere drop, without cancellation
           vec3 rel = uSE * (x - uXc.x) + uSN * (y - uXc.y) + uTSite * dz + dir * H;
@@ -88,7 +88,7 @@ export class Scatter {
       Object.assign(sh.uniforms, this.U);
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', /* glsl */`#include <common>
-          ${BUSH_GLSL}
+          ${BUSH_HASH}
           uniform sampler2D tScatter; uniform vec3 uRelW, uCamScene; uniform mat3 uFrame, uRotS; uniform vec2 uCellV;
           varying vec3 vBush; varying vec4 vLeaf;`)
         .replace('void main() {', /* glsl */`void main() {

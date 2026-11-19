@@ -238,7 +238,7 @@ function groundMaterial(L) {
       // laterite and gravel
       vec3 dd = texture2D(tDirt, vSite / 4.0).rgb * 2.0, dd2 = texture2D(tDirt, vSite / 19.0 + 0.3).rgb * 2.0;
       vec3 det = mix(vec3(1.0), dd * mix(vec3(1.0), dd2, 0.5), 0.35 + 0.65 * near);
-      vec3 lat = vec3(0.16, 0.095, 0.06) * (0.85 + 0.3 * n3) * det;
+      vec3 lat = mix(vec3(0.125, 0.097, 0.07), vec3(0.15, 0.1, 0.068), n1) * (0.82 + 0.36 * n3) * det;
       vec3 grav = vec3(0.155, 0.14, 0.12) * (0.9 + 0.2 * n2) * det;
       col = mix(col, lat, sf.b);
       col = mix(col, grav, sf.g);

@@ -67,6 +67,36 @@ float coastS(vec3 n, float land) {
   vec3 p = n * uTR;
   return (land - 0.5) * 2.0 + (tfbm(p * (1.0 / 6000.0) + 3.1, 3) - 0.5) * 1.1 + (tnoise(p * (1.0 / 700.0) + 7.7) - 0.5) * 0.3;
 }
+// Rolling ground round the launch base, where the big terrain is flattened: swells ~1.7 km and ~500 m across,
+// up to ~30 m high, the pads kept level. Hollows below LAKE_LV hold lakes: the ground there is exactly flat
+// (the water surface) and the shader draws water where reliefShape < LAKE_LV, deeper the further below.
+const float LAKE_LV = 0.29, RELIEF_K = 240.0;
+float reliefShape(vec3 n) { vec3 p = n * uTR; return tfbm(p * (1.0 / 1700.0) + 71.0, 3) + (tnoise(p * (1.0 / 520.0) + 73.0) - 0.5) * 0.24 + (tnoise(p * (1.0 / 160.0) + 79.0) - 0.5) * 0.04; }
+float reliefW(vec3 n, float sd) {
+  vec3 sE = normalize(cross(vec3(0.0, 1.0, 0.0), uTSite)), sN = cross(uTSite, sE), q = (n - uTSite) * uTR;
+  vec2 p2 = vec2(dot(q, sE), dot(q, sN));
+  float w = smoothstep(320.0, 1100.0, sd) * (1.0 - smoothstep(9000.0, 14000.0, sd));
+  return w * smoothstep(260.0, 520.0, length(p2 - vec2(-2500.0, -2800.0))) * smoothstep(260.0, 520.0, length(p2 - vec2(-1500.0, -6500.0)));
+}
+float siteRelief(vec3 n, float sd) {
+  float w = reliefW(n, sd);
+  if (w <= 0.0) return 0.0;
+  return (max(reliefShape(n), LAKE_LV) - LAKE_LV) * RELIEF_K * uTA * w;
+}
+// Ground roughness below the big shapes: lumps ~55 m, ~17 m and ~6 m across, a few metres to a few tens of cm
+// tall. sp = the spacing of whatever samples it (mesh vertices): each octave fades out before it gets finer than
+// the mesh can hold, so the far, coarse patches stay smooth and only the patches near you get the bumps. Not on
+// the flattened launch area, not under lakes, and land never drops into the sea because of it.
+float fineGround(vec3 n, float sp) {
+  float sd = length(n - uTSite) * uTR;
+  float k = smoothstep(260.0, 420.0, sd);
+  if (k <= 0.0) return 0.0;
+  if (reliefW(n, sd) > 0.15) k *= smoothstep(0.0, 0.02, reliefShape(n) - LAKE_LV);
+  vec3 p = n * uTR;
+  return k * ((tnoise(p * (1.0 / 55.0) + 91.0) - 0.5) * 3.6 * (1.0 - smoothstep(22.0, 44.0, sp))
+            + (tnoise(p * (1.0 / 17.0) + 93.0) - 0.5) * 1.1 * (1.0 - smoothstep(6.8, 13.6, sp))
+            + (tnoise(p * (1.0 / 6.0) + 97.0) - 0.5) * 0.32 * (1.0 - smoothstep(2.4, 4.8, sp)));
+}
 // height above sea level in metres at the planet-fixed unit direction n (negative = sea floor)
 float terrainH(vec3 n) {
   vec2 uv = tLonlat(n);
@@ -97,11 +127,14 @@ float terrainH(vec3 n) {
   k1 = k1 * k1 * (3.0 - 2.0 * k1) * (1.0 - ls.y); k2 *= k2 * (1.0 - ls.y);
   hp -= min(hp * 0.75, (70.0 + 180.0 * c.y + 400.0 * c.x) * uTA) * k1 + min(hp * 0.4, (25.0 + 70.0 * c.y) * uTA) * k2;
   float h = s > 0.0 ? 1.2 * smoothstep(0.0, 0.03, s) + 4.0 * smoothstep(0.1, 0.5, s) + hp * smoothstep(0.02, 0.45, s) : s * 60.0;
-  return h * smoothstep(1300.0, 3500.0, length(n - uTSite) * uTR);
+  float sd = length(n - uTSite) * uTR;
+  return h * smoothstep(1300.0, 3500.0, sd) + siteRelief(n, sd) * smoothstep(0.02, 0.3, s);
 }
+float terrainHd(vec3 n, float sp) { float h = terrainH(n); return h > 0.0 ? max(h + fineGround(n, sp), 0.0) : h; }
 `;
 
 export const TERRAIN_GLSL = NOISE_GLSL + TERRAIN_CORE;
+
 
 // ---------------------------------------------------------------- the same function, JS
 const M1 = 1597334677 | 0, M2 = 3812015801 | 0, M3 = 2798796415 | 0, M4 = 2246822519 | 0, M5 = 3266489917 | 0;
@@ -307,8 +340,9 @@ export class Terrain {
           vec3 dir = normalize(FN[f] + (c.x + d.x) * A + (c.y + d.y) * B);
           vec3 t1 = normalize(A - dir * dot(A, dir)), t2 = cross(dir, t1);
           float eps = max(vNode.w * 0.785 * uTR / ${N}.0 * 0.5, 0.5);
-          float h0 = terrainH(dir);
-          float h1 = max(terrainH(normalize(dir + t1 * (eps / uTR))), 0.0), h2 = max(terrainH(normalize(dir + t2 * (eps / uTR))), 0.0);
+          float sp = eps * 2.0;      // vertex spacing of this patch
+          float h0 = terrainHd(dir, sp);
+          float h1 = max(terrainHd(normalize(dir + t1 * (eps / uTR)), sp), 0.0), h2 = max(terrainHd(normalize(dir + t2 * (eps / uTR)), sp), 0.0);
           float hc = max(h0, 0.0);
           vec3 nrm = normalize(dir - t1 * ((h1 - hc) / eps) - t2 * ((h2 - hc) / eps));
           // sun visibility: march toward the sun; the closest miss gives a soft penumbra
@@ -316,12 +350,12 @@ export class Terrain {
           if (dot(dir, uSunB) > -0.05) {
             vec3 P = dir * (uTR + hc + 0.5);
             float dd = max(eps * 1.5, 12.0);
-            for (int i = 0; i < 14; i++) {
+            for (int i = 0; i < 18; i++) {
               vec3 q = P + uSunB * dd; float rq = length(q);
               float clr = (rq - uTR) - max(terrainH(q / rq), 0.0);
-              sh = min(sh, clamp(clr / (dd * 0.035) + 0.15, 0.0, 1.0));
+              sh = min(sh, clamp(clr / (dd * 0.07) + 0.2, 0.0, 1.0));
               if (sh <= 0.0) break;
-              dd *= 1.6;
+              dd *= 1.45;
             }
           }
           // openness: ground lower than its surroundings (valley floors) gets less sky, ridges more
@@ -450,7 +484,36 @@ export class Terrain {
     hp -= Math.min(hp * 0.75, (70 + 180 * c[1] + 400 * c[0]) * this.A) * k1 + Math.min(hp * 0.4, (25 + 70 * c[1]) * this.A) * k2;
     const h = s > 0 ? 1.2 * sstep(0, 0.03, s) + 4 * sstep(0.1, 0.5, s) + hp * sstep(0.02, 0.45, s) : s * 60;
     const st = this.site, sd = Math.hypot(nx - st.x, ny - st.y, nz - st.z) * R;
-    return h * sstep(1300, 3500, sd);
+    const hb = h * sstep(1300, 3500, sd) + this.siteRelief(nx, ny, nz, sd) * sstep(0.02, 0.3, s);
+    return hb > 0 ? Math.max(hb + this.fineGround(nx, ny, nz, sd), 0) : hb;
+  }
+  // the GLSL fineGround at full detail (sp = 0): what the physics stands on is what the nearest patches draw
+  fineGround(nx, ny, nz, sd) {
+    let k = sstep(260, 420, sd);
+    if (k <= 0) return 0;
+    if (this.reliefWJS(nx, ny, nz, sd) > 0.15) k *= sstep(0, 0.02, this.reliefShapeJS(nx, ny, nz) - 0.29);
+    const X = nx * this.R, Y = ny * this.R, Z = nz * this.R;
+    return k * ((tnoise(X / 55 + 91, Y / 55 + 91, Z / 55 + 91) - 0.5) * 3.6 + (tnoise(X / 17 + 93, Y / 17 + 93, Z / 17 + 93) - 0.5) * 1.1 + (tnoise(X / 6 + 97, Y / 6 + 97, Z / 6 + 97) - 0.5) * 0.32);
+  }
+  reliefShapeJS(nx, ny, nz) {
+    const X = nx * this.R, Y = ny * this.R, Z = nz * this.R;
+    return tfbm(X / 1700 + 71, Y / 1700 + 71, Z / 1700 + 71, 3) + (tnoise(X / 520 + 73, Y / 520 + 73, Z / 520 + 73) - 0.5) * 0.24 + (tnoise(X / 160 + 79, Y / 160 + 79, Z / 160 + 79) - 0.5) * 0.04;
+  }
+  reliefWJS(nx, ny, nz, sd) {
+    let w = sstep(320, 1100, sd) * (1 - sstep(9000, 14000, sd));
+    if (w <= 0) return 0;
+    const st = this.site, R = this.R;
+    let ex = st.z, ez = -st.x; const el = Math.hypot(ex, ez) || 1; ex /= el; ez /= el;
+    const sNx = st.y * ez, sNy = st.z * ex - st.x * ez, sNz = -st.y * ex;
+    const qx = (nx - st.x) * R, qy = (ny - st.y) * R, qz = (nz - st.z) * R;
+    const px = qx * ex + qz * ez, py = qx * sNx + qy * sNy + qz * sNz;
+    return w * sstep(260, 520, Math.hypot(px + 2500, py + 2800)) * sstep(260, 520, Math.hypot(px + 1500, py + 6500));
+  }
+  // the same rolling ground and lake hollows as the GLSL siteRelief
+  siteRelief(nx, ny, nz, sd) {
+    const w = this.reliefWJS(nx, ny, nz, sd);
+    if (w <= 0) return 0;
+    return (Math.max(this.reliefShapeJS(nx, ny, nz), 0.29) - 0.29) * 240 * this.A * w;
   }
   // ground height (water surface counts as ground) under an inertial position, planet rotated by theta
   groundAt(x, theta) {

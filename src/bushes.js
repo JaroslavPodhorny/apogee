@@ -8,9 +8,11 @@
 
 export const BUSH_CELL = 7.0;
 
-export const BUSH_GLSL = /* glsl */`
+export const BUSH_HASH = /* glsl */`
 uint bH(uvec3 q) { q = q * uvec3(1597334677u, 3812015801u, 2798796415u); uint h = q.x ^ q.y ^ q.z; h = (h ^ (h >> 16)) * 2246822519u; h ^= h >> 13; h *= 3266489917u; h ^= h >> 16; return h; }
 float bHash(ivec2 c, int s) { return float(bH(uvec3(ivec3(c, s)))) * (1.0 / 4294967295.0); }
+`;
+export const BUSH_GLSL = BUSH_HASH + /* glsl */`
 float bNoise(vec2 p, int s) {
   vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f); ivec2 c = ivec2(i);
   return mix(mix(bHash(c, s), bHash(c + ivec2(1, 0), s), f.x), mix(bHash(c + ivec2(0, 1), s), bHash(c + ivec2(1, 1), s), f.x), f.y);
@@ -36,6 +38,21 @@ float roadDist(vec2 p) {
   for (int i = 0; i < 4; i++) d = min(d, segD(q, RB[i], RB[i + 1]));
   return d;
 }
+// copses: small woods in the meadows. Value noise identical to the planet shader's vnoise/fbm, so the
+// painted woods and the 3D trees standing in them agree exactly.
+float cNoise(vec3 x) {
+  ivec3 i = ivec3(floor(x)); vec3 f = fract(x); f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0); ivec3 j = i + 1;
+  #define CH(a) (float(bH(uvec3(a))) * (1.0 / 4294967295.0))
+  float r = mix(mix(mix(CH(i), CH(ivec3(j.x, i.y, i.z)), f.x), mix(CH(ivec3(i.x, j.y, i.z)), CH(ivec3(j.x, j.y, i.z)), f.x), f.y),
+               mix(mix(CH(ivec3(i.x, i.y, j.z)), CH(ivec3(j.x, i.y, j.z)), f.x), mix(CH(ivec3(i.x, j.y, j.z)), CH(j), f.x), f.y), f.z);
+  #undef CH
+  return r;
+}
+float copseField(vec2 p) {
+  vec3 q = vec3(p / 800.0, 41.0); float a = 0.5, s = 0.0;
+  for (int i = 0; i < 3; i++) { s += a * cNoise(q); q = q * 2.03 + 17.1; a *= 0.5; }
+  return s + (cNoise(vec3(p / 120.0, 43.0)) - 0.5) * 0.08;
+}
 // how thick the scrub grows here, 0..1 (slow: hundreds of metres)
 float bushDensity(vec2 p) {
   float sD = length(p);
@@ -44,6 +61,12 @@ float bushDensity(vec2 p) {
   float d = (0.06 + 0.94 * smoothstep(0.42, 0.78, bFbm(p / 500.0, 61, 2))) * smoothstep(150.0, 400.0, sD) * (1.0 - smoothstep(55000.0, 85000.0, sD));
   d *= 1.0 - farmMask(p, sD);
   d *= smoothstep(0.62, 0.58, lakeField(p) - (1.0 - smoothstep(600.0, 1100.0, sD)) * 0.6);
+  // the lakes in the hollows of the rolling ground (terrain.js siteRelief)
+  if (d > 0.0) {
+    vec3 sE = normalize(cross(vec3(0.0, 1.0, 0.0), uTSite)), sN = cross(uTSite, sE);
+    vec3 nn = normalize(uTSite * uTR + sE * p.x + sN * p.y);
+    if (reliefW(nn, sD) > 0.15) d *= smoothstep(0.0, 0.025, reliefShape(nn) - LAKE_LV);
+  }
   d *= smoothstep(14.0, 22.0, roadDist(p));
   for (int i = 0; i < 2; i++) d *= smoothstep(250.0, 290.0, length(p - PADS[i]));
   d *= smoothstep(950.0, 1100.0, length((p - TOWN) * vec2(1.0, 1.5)));

@@ -56,6 +56,11 @@ const mat3 ROT = mat3(0.00, 0.80, 0.60, -0.80, 0.36, -0.48, -0.60, -0.48, 0.64);
 // value noise summed over rotated octaves: no visible lattice
 float fbmR(vec3 p, int oct) { float a = 0.5, s = 0.0, n = 0.0; for (int i = 0; i < 5; i++) { if (i >= oct) break; s += a * vnoise(p, 0); n += a; p = ROT * p * 2.03 + 1.7; a *= 0.5; } return s / n; }
 float fbm(vec3 p, int oct) { float a = 0.5, s = 0.0; for (int i = 0; i < 6; i++) { if (i >= oct) break; s += a * vnoise(p, 0); p = p * 2.03 + 17.1; a *= 0.5; } return s; }
+// slope (rise per metre) of a noise relief of amplitude amp metres and feature size sc metres, at p (metres)
+vec2 reliefSlope(vec2 p, float sc, float seed, float amp) {
+  float e = sc * 0.08, b0 = vnoise(vec3(p / sc, seed), 0);
+  return vec2(vnoise(vec3((p + vec2(e, 0.0)) / sc, seed), 0) - b0, vnoise(vec3((p + vec2(0.0, e)) / sc, seed), 0) - b0) * (amp / e);
+}
 
 vec2 lonlat(vec3 n) {
   float lon = atan(-n.z, n.x) + uLon0;
@@ -259,13 +264,17 @@ vec4 facilities(vec2 p, float foot) {
   float verge = 1.0 - smoothstep(12.0, 20.0 + aa, d + (vnoise(vec3(p / 40.0, 3.0), 0) - 0.5) * 8.0);
   vec3 col = vec3(0.09, 0.1, 0.04) * (0.85 + 0.3 * vnoise(vec3(p / 12.0, 5.0), 0));
   float a = verge;
-  col = mix(col, vec3(0.16, 0.095, 0.06), road); a = max(a, road);
+  // a dirt road: compacted brown earth, paler in the wheel tracks, darker at the crown and edges
+  vec3 rc = mix(vec3(0.12, 0.094, 0.068), vec3(0.148, 0.102, 0.07), vnoise(vec3(p / 60.0, 7.0), 0)) * (0.85 + 0.3 * vnoise(vec3(p / 5.0, 9.0), 0));
+  float trk = smoothstep(0.6, 1.3, d) * (1.0 - smoothstep(1.5, 2.4, d)) * smoothstep(3.0, 0.8, foot);
+  rc *= 1.0 + 0.18 * trk - 0.12 * (1.0 - smoothstep(0.0, 0.5, d)) * smoothstep(3.0, 0.8, foot);
+  col = mix(col, rc, road); a = max(a, road);
   for (int i = 0; i < 2; i++) {
     vec2 o = p - PADS[i];
     float r = length(o) + (vnoise(vec3(p / 120.0, float(i) * 9.0), 0) - 0.5) * 90.0;
     float clr = 1.0 - smoothstep(250.0, 256.0 + aa, r);
     if (clr > 0.0) {
-      vec3 g = mix(vec3(0.1, 0.105, 0.045), vec3(0.19, 0.11, 0.06), smoothstep(150.0, 60.0, r)) * mix(0.6, 1.0, smoothstep(252.0, 225.0, r));   // grass outside, bare laterite inside, shade under the tree line
+      vec3 g = mix(vec3(0.1, 0.105, 0.045), vec3(0.15, 0.105, 0.072), smoothstep(150.0, 60.0, r)) * mix(0.6, 1.0, smoothstep(252.0, 225.0, r));   // grass outside, bare laterite inside, shade under the tree line
       float pad = 1.0 - smoothstep(32.0 - aa, 32.0 + aa, max(abs(o.x), abs(o.y)));
       g = mix(g, vec3(0.3, 0.29, 0.27), pad);
       vec2 bo = o - vec2(95.0, -40.0), bo2 = o - vec2(-70.0, 85.0);
@@ -432,8 +441,13 @@ void main() {
     float landW = 1.0 - water;
     vec3 loc = uCamRel + dF * tG;
     // footprint stretched by the viewing angle: fine detail on slopes seen edge-on would only shimmer
-    float footA = foot / max(dot(nGeo, view), 0.22);
-    float graz = smoothstep(0.1, 0.4, dot(nGeo, view));   // texture detail seen nearly edge-on only smears: fade it
+    // A pixel seen at a shallow angle covers a long, thin strip of ground: sharp across, stretched along the
+    // view. Fading detail by the long side throws away detail that is perfectly visible across; by the short
+    // side it would shimmer along. The geometric mean of the two keeps the ground crisp without shimmering.
+    float cosV = max(dot(nGeo, view), 0.015);
+    float footA = foot * inversesqrt(cosV);
+    float footL = foot / max(cosV, 0.04);              // the long side: for regular patterns (rows, stripes), which alias along it
+    float graz = smoothstep(0.0, 0.05, cosV);          // only right at the horizon line, where it is all one smear
 
     // --- mountains: bare rock on steep ground, alpine meadow above the tree line, snow above the snow line ---
     float rock = 0.0, snow = 0.0, alpine = 0.0;
@@ -579,7 +593,8 @@ void main() {
     // Every scale fades in only once a pixel can resolve it (footA = metres per pixel), so the land gains
     // detail continuously on the way down: land-use regions from orbit, farms from 20 km, fields from 10 km,
     // mottling, hedgerow trees and copses from 3 km, tramlines below 100 m, crop rows and grass at the bottom.
-    float lakeK = 0.0;
+    float lakeK = 0.0, lakeDep = 0.0, shoreK = 0.0;
+    vec3 furrowN = vec3(0.0);
     float cty = (1.0 - smoothstep(55000.0, 85000.0, siteD)) * landW * (1.0 - bare) * (1.0 - sandK) * (1.0 - iceCap) * (1.0 - alpine);
     if (cty > 0.001) {
       vec2 p = sP;
@@ -593,7 +608,7 @@ void main() {
       float m3 = fbm(vec3(p / 650.0, 17.0), 3);
       // meadow: greens varying by hillside, swathe and patch, gold on drier high ground, russet heath
       float dry = clamp(smoothstep(0.38, 0.75, m1) * 0.7 + smoothstep(80.0, 700.0, H / uTA) * 0.6, 0.0, 1.0);
-      vec3 cc = mix(vec3(0.026, 0.042, 0.017), vec3(0.045, 0.052, 0.022), smoothstep(0.3, 0.7, m3));
+      vec3 cc = mix(vec3(0.036, 0.06, 0.022), vec3(0.066, 0.074, 0.03), smoothstep(0.3, 0.7, m3));
       cc *= 0.85 + 0.3 * m2;
       cc = mix(cc, vec3(0.075, 0.066, 0.035), dry * 0.5);
       float heath = smoothstep(0.63, 0.7, fbm(vec3(p / 3600.0, 12.0), 3)) * (1.0 - smoothstep(0.38, 0.5, lu));
@@ -671,18 +686,30 @@ void main() {
           crop = mix(crop, mix(crop, vec3(dot(crop, vec3(0.3, 0.55, 0.15))), 0.25), 1.0);  // a touch less saturated: real fields are muted
           // inside a field: soil and moisture mottling at 90 m and 25 m, darker headland round the edge
           float bd = v.x * FS;
-          float kD = smoothstep(25.0, 4.0, footA);
+          float kD = smoothstep(45.0, 6.0, footA);
           if (kD > 0.0) {
             float mo = fbm(vec3(p / 90.0, h1 * 7.0), 3), mo2 = vnoise(vec3(p / 25.0, h2 * 5.0), 0);
-            crop *= mix(1.0, (0.76 + 0.48 * mo) * (0.9 + 0.2 * mo2), kD);
+            crop *= mix(1.0, (0.68 + 0.64 * mo) * (0.86 + 0.28 * mo2), kD);
             crop *= mix(1.0, 0.86, (1.0 - smoothstep(6.0, 12.0, bd)) * kD);
+          }
+          // machinery passes: alternate swaths ~9 m wide a shade lighter and darker, the classic look of fields from the air
+          {
+            float sw = across / mix(7.0, 12.0, h2), sa = fwidth(sw) + 1e-4;
+            float pass = smoothstep(0.5 - sa, 0.5 + sa, abs(fract(sw) - 0.5) * 2.0);
+            crop *= mix(1.0, 0.92 + 0.16 * pass, smoothstep(5.0, 1.5, footL) * (1.0 - step(0.6, h4)) * step(0.25, h2));
           }
           float tw = fwidth(sdir);
           float tram = 1.0 - smoothstep(0.35 - tw, 0.35 + tw, abs(fract(sdir / 21.0) - 0.5) * 21.0);
           float rows = 0.5 + 0.5 * sin(across * 7.85);
           float plough = step(0.45, h1) * step(h1, 0.57);
-          crop *= mix(1.0, 0.88, tram * smoothstep(8.0, 2.0, footA) * (1.0 - step(0.6, h4)));
-          crop *= mix(1.0, 0.82 + 0.3 * rows * (1.0 + plough), smoothstep(1.2, 0.35, footA) * (1.0 - step(0.6, h4)));
+          crop *= mix(1.0, 0.88, tram * smoothstep(4.0, 1.2, footL) * (1.0 - step(0.6, h4)));
+          crop *= mix(1.0, 0.82 + 0.3 * rows * (1.0 + plough), smoothstep(0.32, 0.12, footL) * (1.0 - step(0.6, h4)));
+          // the rows and furrows themselves: ridges 0.8 m apart that a low sun picks out
+          {
+            vec3 acrossV = sE0 * (-dir.y) + sN0 * dir.x;
+            float rk = smoothstep(0.3, 0.1, footL) * (1.0 - step(0.6, h4)) * graz;
+            furrowN += acrossV * cos(across * 7.85) * (plough > 0.5 ? 0.5 : 0.16) * rk;
+          }
           // borders: hedgerows (with trees along them) or pale grass margins; lanes between farms
           float bw = fwidth(bd) + 0.3;
           bool hedge = h3 < 0.6;
@@ -707,9 +734,9 @@ void main() {
         cc = mix(cc, fc, farmK);
       }
       // copses: small woods scattered in the meadows and between fields (crown texture, lit from the sun)
-      float cop = fbm(vec3(p / 800.0, 41.0), 3) + (vnoise(vec3(p / 120.0, 43.0), 0) - 0.5) * 0.08;
+      float cop = copseField(p);
       float ca = fwidth(cop) + 1e-4;
-      float copK = smoothstep(0.69 - ca, 0.69 + ca, cop) * smoothstep(420.0, 700.0, siteD) * (1.0 - smoothstep(0.1, 0.18, slope));
+      float copK = smoothstep(0.63 - ca, 0.63 + ca, cop) * smoothstep(420.0, 700.0, siteD) * (1.0 - smoothstep(0.1, 0.18, slope));
       if (copK > 0.0) {
         vec3 wood = vec3(0.018, 0.034, 0.012);
         float kW = smoothstep(12.0, 2.0, footA);
@@ -721,36 +748,75 @@ void main() {
         cc = mix(cc, wood, copK);
       }
       // the shadow a wood throws on the field beside it
-      float copS = smoothstep(0.69 - ca, 0.69 + ca, fbm(vec3((p - sun2 * 14.0 * shLen) / 800.0, 41.0), 3) + (vnoise(vec3((p - sun2 * 14.0 * shLen) / 120.0, 43.0), 0) - 0.5) * 0.08) * smoothstep(420.0, 700.0, siteD);
+      float copS = smoothstep(0.63 - ca, 0.63 + ca, fbm(vec3((p - sun2 * 14.0 * shLen) / 800.0, 41.0), 3) + (vnoise(vec3((p - sun2 * 14.0 * shLen) / 120.0, 43.0), 0) - 0.5) * 0.08) * smoothstep(420.0, 700.0, siteD);
       cc *= 1.0 - 0.45 * copS * (1.0 - copK) * smoothstep(30.0, 6.0, footA);
       // hedgerow trees and their shadows
       cc = mix(cc, vec3(0.02, 0.04, 0.014) * (0.7 + 0.6 * smoothstep(0.35, 0.8, textureGrad(tGround, gUV(26.0) + sun2 * 1.5 / 26.0, gdx / 26.0, gdy / 26.0).r)), hedgeT * farmK);
       cc *= 1.0 - 0.45 * hedgeSh * farmK;
       // lakes: in the flat ground, ringed by reeds and a thin pale shore
       float lk = lakeField(p) + (vnoise(vec3(p / 500.0, 2.0), 0) - 0.5) * 0.03 + (vnoise(vec3(p / 90.0, 4.0), 0) - 0.5) * 0.012 * smoothstep(20.0, 4.0, footA);
-      float thr = 0.64 + smoothstep(0.015, 0.06, slope) * 0.6 + (1.0 - smoothstep(600.0, 1100.0, siteD)) * 0.6;
+      float rW = reliefW(nF, siteD);
+      float thr = 0.64 + smoothstep(0.015, 0.06, slope) * 0.6 + (1.0 - smoothstep(600.0, 1100.0, siteD)) * 0.6 + smoothstep(0.0, 0.3, rW);
       float la = fwidth(lk) + 1e-4;
       lakeK = smoothstep(thr - la, thr + la, lk) * cty;
+      lakeDep = max(lakeDep, (lk - thr) * 900.0);           // a depth in metres, roughly, for the colour: shelves off quickly
       float reed = smoothstep(thr - 0.04, thr - 0.012, lk) * (1.0 - lakeK);
       cc = mix(cc, vec3(0.04, 0.08, 0.028), reed * 0.8);
-      cc = mix(cc, vec3(0.2, 0.18, 0.12), smoothstep(thr - 0.008 - la, thr - 0.002, lk) * (1.0 - lakeK) * 0.7);
+      cc = mix(cc, vec3(0.06, 0.052, 0.036), smoothstep(thr - 0.006 - la, thr - 0.001, lk) * (1.0 - lakeK) * 0.6);
+      // lakes in the hollows of the rolling ground round the base: the water lies level, the shore follows the land
+      if (rW > 0.15) {
+        float rs = reliefShape(nF);
+        float d = (LAKE_LV - rs) * RELIEF_K * uTA * rW;                  // metres below the water line (negative: above it)
+        float aw = fwidth(d) + 0.02;
+        float lk2 = smoothstep(-aw, aw, d) * smoothstep(0.15, 0.35, rW) * smoothstep(18.0, 40.0, roadDist(p));
+        lakeK = max(lakeK, lk2 * cty); lakeDep = max(d, 0.0);
+        // the shore: wet mud and sand a metre or so up, reed beds in patches along it
+        float nz = vnoise(vec3(p / 35.0, 21.0), 0), nz2 = vnoise(vec3(p / 9.0, 23.0), 0);
+        shoreK = (1.0 - smoothstep(0.0, 1.4 + 1.2 * nz, -d)) * (1.0 - lk2) * smoothstep(0.15, 0.35, rW);
+        vec3 mud = mix(vec3(0.06, 0.05, 0.035), vec3(0.14, 0.12, 0.085), smoothstep(-0.2, -1.2, d));
+        cc = mix(cc, mud * (0.8 + 0.4 * nz2), shoreK * 0.85);
+        float reeds = smoothstep(0.55, 0.7, nz) * (1.0 - smoothstep(0.0, 0.9, abs(d + 0.1))) * smoothstep(0.15, 0.35, rW);
+        cc = mix(cc, vec3(0.05, 0.07, 0.025) * (0.7 + 0.6 * nz2), reeds);
+        lakeK *= 1.0 - reeds * 0.9;
+      }
       // close up: grass, clover and bare patches from the mipmapped detail texture, finer the closer you get
       float g1 = textureGrad(tGround, gUV(40.0) + 0.29, gdx / 40.0, gdy / 40.0).b, g2 = textureGrad(tGround, gUV(12.0) + 0.83, gdx / 12.0, gdy / 12.0).g;
       float g3 = textureGrad(tGround, gUV(3.0) + 0.61, gdx / 3.0, gdy / 3.0).g;
-      cc *= mix(1.0, (0.8 + 0.4 * g1) * (0.85 + 0.3 * g2), smoothstep(80.0, 12.0, footA) * graz);
-      cc *= mix(1.0, 0.8 + 0.4 * g3, smoothstep(2.0, 0.4, footA) * graz);
+      cc *= mix(1.0, (0.7 + 0.6 * g1) * (0.78 + 0.44 * g2), smoothstep(80.0, 12.0, footA) * graz);
+      cc *= mix(1.0, 0.7 + 0.6 * g3, smoothstep(2.0, 0.4, footA) * graz);
+      // a real meadow is patchy: straw-dry swathes, lush dark clumps, clover, worn and bare spots
+      {
+        float kP = smoothstep(14.0, 2.0, footA) * graz * (1.0 - farmK) * (1.0 - shoreK);
+        if (kP > 0.0) {
+          float q1 = fbm(vec3(p / 22.0, 81.0), 3), q2 = vnoise(vec3(p / 6.0, 83.0), 0), q3 = vnoise(vec3(p / 2.2, 85.0), 0);
+          float dryP = smoothstep(0.55, 0.68, q1 + (q2 - 0.5) * 0.25);
+          float lushP = smoothstep(0.42, 0.3, q1 + (q2 - 0.5) * 0.2);
+          float bareP = smoothstep(0.8, 0.88, q2 * 0.6 + q3 * 0.5) * smoothstep(3.0, 0.8, footA);
+          vec3 mc = cc;
+          mc = mix(mc, vec3(0.12, 0.105, 0.05) * (0.85 + 0.3 * q3), dryP * 0.8);
+          mc = mix(mc, vec3(0.03, 0.058, 0.02), lushP * 0.7);
+          mc = mix(mc, vec3(0.085, 0.068, 0.048), bareP);
+          cc = mix(cc, mc, kP);
+        }
+      }
+      // close to the ground: tufts lighter and yellower on their sunny tops, darker blue-green in between
+      cc = mix(cc, cc * mix(vec3(0.75, 0.85, 0.95), vec3(1.25, 1.18, 0.85), g3), smoothstep(1.5, 0.3, footA) * graz * (1.0 - farmK * 0.6));
       alb = mix(alb, cc, cty);
       forest *= 1.0 - cty;
       // gentle relief below the terrain mesh's resolution: swells and hollows at 300 m and 70 m
       bump *= 1.0 - cty;
-      float kB = smoothstep(30.0, 4.0, footA) * cty;
-      if (kB > 0.0) {
-        float e = 6.0;
-        float b0 = vnoise(vec3(p / 300.0, 51.0), 0) + 0.3 * vnoise(vec3(p / 70.0, 53.0), 0);
-        float bx = vnoise(vec3((p + vec2(e, 0.0)) / 300.0, 51.0), 0) + 0.3 * vnoise(vec3((p + vec2(e, 0.0)) / 70.0, 53.0), 0);
-        float by = vnoise(vec3((p + vec2(0.0, e)) / 300.0, 51.0), 0) + 0.3 * vnoise(vec3((p + vec2(0.0, e)) / 70.0, 53.0), 0);
-        bump += (sE0 * (b0 - bx) + sN0 * (b0 - by)) * 2.2 * kB;
+      // relief finer than the terrain mesh, each scale only once a pixel can show it: swells (300 m), hummocks
+      // (70 m, 18 m), lumps (5 m), tussocks (1 m). A low sun picks them all out.
+      if (cty > 0.0 && footA < 60.0) {
+        vec2 g = reliefSlope(p, 300.0, 51.0, 7.0) * smoothstep(60.0, 12.0, footA)
+               + reliefSlope(p, 70.0, 53.0, 2.0) * smoothstep(20.0, 4.0, footA)
+               + reliefSlope(p, 18.0, 55.0, 0.9) * smoothstep(6.0, 1.2, footA)
+               + reliefSlope(p, 5.0, 57.0, 0.3) * smoothstep(1.6, 0.35, footA)
+               + reliefSlope(p, 1.1, 59.0, 0.09) * smoothstep(0.35, 0.08, footA) * (1.0 - farmK * 0.7);
+        g *= (1.0 - lakeK) * graz;
+        bump -= (sE0 * g.x + sN0 * g.y) * cty;
       }
+      bump += furrowN * cty * (1.0 - lakeK) * (1.0 - copK);
     }
     nrm = normalize(nrm + bump * landW);
     // rivers: meandering channels through the forest (anti-aliased lines on a noise contour)
@@ -800,7 +866,7 @@ void main() {
         nrm = normalize(nrm - radial * g * (1.0 - smoothstep(2.6, 3.0, q)) * landW);
       }
     }
-    float river = 0.0, coastSP = 1.0, coastFl = 0.0;
+    float river = 0.0, coastSP = 1.0, coastFl = 0.0, inDep = 1.0;
     if (ter) {
       // the coastline per pixel from the same land/sea field as the terrain, so it never shows the mesh's steps
       if (abs(H) < 40.0) {
@@ -813,9 +879,19 @@ void main() {
       }
       // rivers on the big valleys' floors, in stretches, wider toward the sea; anti-aliased by the field's own
       // screen derivative so distant rivers thin out instead of flickering
-      float rwid = 0.0007 + 0.0014 * (1.0 - smoothstep(5.0, 80.0, H));
+      float rwid = (0.0007 + 0.0014 * (1.0 - smoothstep(5.0, 80.0, H))) * (0.55 + 0.9 * tfbm(nF * (uR / 900.0) + 17.0, 2));   // narrows and widens along its course
       float seg = smoothstep(0.42, 0.55, tfbm(nF * (uR / 16000.0) + 5.0, 2));
-      river = clamp((rwid - vB) / vBw + 0.5, 0.0, 1.0) * seg * landW * smoothstep(0.4, 2.5, H) * (1.0 - sandK) * (1.0 - bare) * smoothstep(0.1, 0.04, slope) * uTerK;
+      float rOn = seg * landW * smoothstep(0.4, 2.5, H) * (1.0 - sandK) * (1.0 - bare) * smoothstep(0.1, 0.04, slope) * uTerK;
+      river = clamp((rwid - vB) / vBw + 0.5, 0.0, 1.0) * rOn;
+      inDep = clamp((rwid - vB) / rwid, 0.0, 1.0);                     // 0 at the bank, 1 mid-channel
+      // banks: a strip of mud right at the water, then a band of lush scrub and reeds along the river
+      if (rOn > 0.0 && river < 1.0) {
+        float bn = vnoise(vec3(sP / 25.0, 63.0), 0), bn2 = vnoise(vec3(sP / 7.0, 65.0), 0);
+        float mud = (1.0 - smoothstep(rwid, rwid * 1.35 + vBw, vB)) * rOn;
+        float lush = (1.0 - smoothstep(rwid * (1.6 + 1.6 * bn), rwid * (2.6 + 2.0 * bn) + vBw, vB)) * rOn;
+        alb = mix(alb, vec3(0.03, 0.05, 0.018) * (0.7 + 0.6 * bn2), lush * 0.75 * (1.0 - river));
+        alb = mix(alb, vec3(0.04, 0.038, 0.026) * (0.8 + 0.4 * bn2), mud * 0.7 * (1.0 - river));
+      }
       float vk = 1.0 - smoothstep(0.0, 0.06, vB);
       alb = mix(alb, alb * vec3(0.82, 1.05, 0.8), vk * 0.45 * soft);                    // lusher, darker valley floors
     } else if (foot < 3000.0 && landW > 0.0 && awaySite > 0.0 && forest > 0.05) {
@@ -826,7 +902,8 @@ void main() {
         river = clamp((0.0045 - rw) / fw + 0.5, 0.0, 1.0) * region * awaySite * landW * smoothstep(0.3, 0.1, length(rl.xy)) * smoothstep(0.06, 0.02, slope);
       }
     }
-    river = max(max(river, poolK), lakeK);      // marsh pools and lakes: calm water
+    if (lakeK > river) inDep = smoothstep(0.0, 4.0, lakeDep);
+    river = max(max(river, poolK), lakeK);      // marsh pools, rivers and lakes: inland water
     water = max(water, river);
     // shore: a narrow band of sand where land meets sea, turquoise shallows just offshore
     float beach = (ter ? mix(smoothstep(0.36, 0.43, wraw), smoothstep(0.02, 0.3, H) * smoothstep(2.8, 1.2, H) * smoothstep(0.18, 0.36, wraw), uTerK) : smoothstep(0.36, 0.43, wraw)) * (1.0 - water);
@@ -837,7 +914,14 @@ void main() {
     vec3 seaBase = ter ? mix(alb * 0.55, vec3(0.012, 0.03, 0.05), uTerK) : alb * 0.55;
     vec3 seaAlb = mix(seaBase, vec3(0.03, 0.11, 0.11), shallow * water * 0.85);
     seaAlb = mix(seaAlb, vec3(0.06, 0.045, 0.028), river * (1.0 - step(0.5, dat.g)) * step(55000.0, siteD));      // tropical rivers carry silt
-    seaAlb = mix(seaAlb, vec3(0.012, 0.035, 0.05), river * (1.0 - step(55000.0, siteD)));      // around the base: clear, deep blue lakes and rivers
+    // inland water: you see the murky, weedy bottom in the shallows at the margin, dark peaty water further in
+    if (river > 0.0) {
+      float lz = vnoise(vec3(sP / 40.0, 61.0), 0), lz2 = vnoise(vec3(sP / 9.0, 67.0), 0);
+      vec3 shallowC = mix(vec3(0.05, 0.048, 0.03), vec3(0.03, 0.045, 0.024), lz) * (0.85 + 0.3 * lz2);
+      vec3 deepC = vec3(0.007, 0.018, 0.02);
+      float dk = lakeK > 0.0 && lakeDep > 0.0 ? smoothstep(0.1, 2.0 + 1.5 * lz, lakeDep) : smoothstep(0.0, 0.5, inDep);
+      seaAlb = mix(seaAlb, mix(shallowC, deepC, dk), river * (siteD < 55000.0 ? 1.0 : 0.4));      // far from the base the satellite map's own water tint stays
+    }
 
     // --- sea: wind waves from swell to ripples, so the sun leaves a glittering path ---
     // sea surface: swell, waves and chop from the mipmapped noise volume. Each band is sampled with this
@@ -848,17 +932,22 @@ void main() {
     if (water > 0.01) {
       float wt = uTime;
       float swellK = 0.55 + 0.9 * fbm(nF * (uR / 25000.0) + 3.0, 2);      // wind varies over the sea: no uniform repeat
-      for (int i = 0; i < 3; i++) {
-        float tile = i == 0 ? 1100.0 : i == 1 ? 310.0 : 83.0;
-        vec2 dir2 = i == 0 ? vec2(1.0, 0.35) : i == 1 ? vec2(0.6, -0.8) : vec2(-0.3, 1.0);
-        vec2 q = gUV(tile) + dir2 * wt * (i == 0 ? 3.0 : i == 1 ? 1.7 : 0.9) / tile + float(i) * 0.37;
+      // inland water: no swell, just the ripples a breeze raises, rougher in gusts (cat's paws) and less in the lee
+      float gust = smoothstep(0.4, 0.75, vnoise(vec3(sP / 170.0 + vec2(wt * 0.015, wt * 0.006), 7.0), 0) * 0.7 + vnoise(vec3(sP / 55.0 + vec2(wt * 0.03, 0.0), 9.0), 0) * 0.3);
+      float inl = river, rip = 0.35 + 0.9 * gust;
+      for (int i = 0; i < 4; i++) {
+        float tile = i == 0 ? 1100.0 : i == 1 ? 310.0 : i == 2 ? 83.0 : 19.0;
+        vec2 dir2 = i == 0 ? vec2(1.0, 0.35) : i == 1 ? vec2(0.6, -0.8) : i == 2 ? vec2(-0.3, 1.0) : vec2(0.8, 0.55);
+        vec2 q = gUV(tile) + dir2 * wt * (i == 0 ? 3.0 : i == 1 ? 1.7 : i == 2 ? 0.9 : 0.45) / tile + float(i) * 0.37;
         vec2 ax = gdx / tile, ay = gdy / tile;
         float e = 0.004;
         float h0 = textureGrad(tGround, q, ax, ay).g, hx = textureGrad(tGround, q + vec2(e, 0.0), ax, ay).g, hy = textureGrad(tGround, q + vec2(0.0, e), ax, ay).g;
-        float amp = i == 0 ? 0.06 : i == 1 ? 0.07 : 0.07;
+        float amp = i == 0 ? 0.06 : i == 1 ? 0.07 : i == 2 ? 0.07 : 0.06;
+        float wSea = i == 3 ? 0.0 : 1.0, wIn = (i == 0 ? 0.0 : i == 1 ? 0.12 : i == 2 ? 0.45 : 1.0) * rip;
+        amp *= mix(wSea, wIn, inl);
         float vis = smoothstep(tile * 0.05, tile * 0.01, footA);
         vec3 gE = normalize(uGE - nF * dot(uGE, nF)), gN = normalize(uGN - nF * dot(uGN, nF));
-        wn += (gE * (h0 - hx) + gN * (h0 - hy)) / e * amp * (1.0 - 0.9 * river) * vis * swellK;   // unresolved bands go to roughness, not pattern
+        wn += (gE * (h0 - hx) + gN * (h0 - hy)) / e * amp * vis * mix(swellK, 1.0, inl);   // unresolved bands go to roughness, not pattern
         lost += (1.0 - vis) * amp * amp * 4.0;
       }
     }
@@ -876,8 +965,17 @@ void main() {
     // snow sparkles a little
     land += snow * uE * Tg * cs * pow(max(dot(reflect(-uSunF, nrm), view), 0.0), 40.0) * 0.06;
     float nv = max(dot(snrm, view), 0.02);
-    float F = (0.02 + 0.98 * pow(1.0 - nv, 5.0)) * (1.0 - 0.7 * river);   // rivers: dark, rough, little sky in them
+    float F = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
     vec3 skyRef = uE * vec3(0.035, 0.07, 0.15) * smoothstep(-0.15, 0.3, mu);
+    // inland water mirrors the sky it faces: pale near the horizon, deeper blue overhead, warm toward the sun
+    if (river > 0.0) {
+      vec3 rd = reflect(-view, snrm);
+      float el = clamp(dot(rd, nF), 0.0, 1.0), toSun = max(dot(rd, uSunF), 0.0);
+      float day = smoothstep(-0.15, 0.3, mu);
+      vec3 zen = vec3(0.028, 0.06, 0.14), hor = vec3(0.05, 0.08, 0.13) + Tg * 0.025;     // no brighter than the sea's reflection
+      vec3 sk = mix(hor, zen, pow(el, 0.45)) + Tg * (0.05 * pow(toSun, 6.0) + 0.25 * pow(toSun, 60.0));
+      skyRef = mix(skyRef, uE * sk * day + uE * 0.0004, river);
+    }
     vec3 hv = normalize(uSunF + view);
     float rough = clamp(sqrt(0.004 + lost * 0.9), 0.06, 0.32);
     float sh = 2.0 / (rough * rough) - 2.0;

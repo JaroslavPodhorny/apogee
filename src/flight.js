@@ -583,18 +583,40 @@ export class Flight {
   // The cloud march uses a different random offset every frame; this pass blends each frame with the last
   // one (re-projected for the camera's turn, clamped to the current neighbourhood so nothing smears), only
   // where the pixel shows volumetric cloud. Ground and clear sky pass straight through, as sharp as rendered.
-  resolveSky(cam, w, h) {
+  // The sky and ground are shaded at reduced resolution (they are the frame's most expensive pixels). This pass
+  // brings them up to the frame's own size with a Catmull-Rom bicubic filter (much sharper than bilinear), clamped
+  // to the source pixels around it so edges get no halos, plus a light sharpen; and steadies the volumetric
+  // clouds over time.
+  resolveSky(cam, sw, sh, w, h) {
     let T = this.taa;
     if (!T) {
       const mk = () => new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
       const mat = new THREE.ShaderMaterial({
-        uniforms: { tCur: { value: null }, tHist: { value: null }, uRot: { value: new THREE.Matrix3() }, uPrevInv: { value: new THREE.Matrix3() }, uTan: { value: 1 }, uAspect: { value: 1 }, uValid: { value: 0 }, uTexel: { value: new THREE.Vector2() } },
+        uniforms: { tCur: { value: null }, tHist: { value: null }, uRot: { value: new THREE.Matrix3() }, uPrevInv: { value: new THREE.Matrix3() }, uTan: { value: 1 }, uAspect: { value: 1 }, uValid: { value: 0 }, uTexel: { value: new THREE.Vector2() }, uSrc: { value: new THREE.Vector2(1, 1) }, uSharp: { value: 0 } },
         vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
         fragmentShader: /* glsl */`
-          uniform sampler2D tCur, tHist; uniform mat3 uRot, uPrevInv; uniform float uTan, uAspect, uValid; uniform vec2 uTexel;
+          uniform sampler2D tCur, tHist; uniform mat3 uRot, uPrevInv; uniform float uTan, uAspect, uValid, uSharp; uniform vec2 uTexel, uSrc;
           varying vec2 vUv;
+          // Catmull-Rom in 9 bilinear taps (the weights of the middle pair folded into one fetch)
+          vec3 cubic(vec2 uv) {
+            vec2 sp = uv * uSrc, tp = floor(sp - 0.5) + 0.5, f = sp - tp;
+            vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f), w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);
+            vec2 w12 = w1 + w2, t0 = (tp - 1.0) / uSrc, t3 = (tp + 2.0) / uSrc, t12 = (tp + w2 / w12) / uSrc;
+            vec3 r = texture2D(tCur, vec2(t0.x, t0.y)).rgb * w0.x * w0.y + texture2D(tCur, vec2(t12.x, t0.y)).rgb * w12.x * w0.y + texture2D(tCur, vec2(t3.x, t0.y)).rgb * w3.x * w0.y
+                   + texture2D(tCur, vec2(t0.x, t12.y)).rgb * w0.x * w12.y + texture2D(tCur, vec2(t12.x, t12.y)).rgb * w12.x * w12.y + texture2D(tCur, vec2(t3.x, t12.y)).rgb * w3.x * w12.y
+                   + texture2D(tCur, vec2(t0.x, t3.y)).rgb * w0.x * w3.y + texture2D(tCur, vec2(t12.x, t3.y)).rgb * w12.x * w3.y + texture2D(tCur, vec2(t3.x, t3.y)).rgb * w3.x * w3.y;
+            return r;
+          }
           void main() {
             vec4 c = texture2D(tCur, vUv);
+            // the four source pixels round this one: their range bounds the sharp result (no ringing, no halos)
+            vec2 st = (floor(vUv * uSrc - 0.5) + 0.5) / uSrc;
+            vec3 a0 = texture2D(tCur, st).rgb, a1 = texture2D(tCur, st + vec2(uTexel.x, 0.0)).rgb, a2 = texture2D(tCur, st + vec2(0.0, uTexel.y)).rgb, a3 = texture2D(tCur, st + uTexel).rgb;
+            vec3 lo = min(min(a0, a1), min(a2, a3)), hi = max(max(a0, a1), max(a2, a3));
+            vec3 cs = cubic(vUv);
+            // a light unsharp mask against the bilinear value, kept inside the local range
+            cs = clamp(cs + (cs - c.rgb) * uSharp, lo, hi);
+            c.rgb = cs;
             float cloud = 1.0 - c.a;
             vec3 mn = c.rgb, mx = c.rgb, m2 = vec3(0.0);
             for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
@@ -620,10 +642,11 @@ export class Flight {
       T = this.taa = { a: mk(), b: mk(), mat, scene, cam: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1), prev: new THREE.Matrix3(), valid: false };
     }
     if (T.a.width !== w || T.a.height !== h) { T.a.setSize(w, h); T.b.setSize(w, h); T.valid = false; }
+    T.mat.uniforms.uSrc.value.set(sw, sh); T.mat.uniforms.uSharp.value = sw < w * 0.98 ? 0.35 : 0.12;
     const u = T.mat.uniforms, rot = new THREE.Matrix3().setFromMatrix4(cam.matrixWorld);
     u.tCur.value = this.skyRT.texture; u.tHist.value = T.b.texture;
     u.uRot.value.copy(rot); u.uPrevInv.value.copy(T.prev).transpose();
-    u.uTan.value = Math.tan((cam.fov * Math.PI) / 360); u.uAspect.value = cam.aspect; u.uValid.value = T.valid ? 1 : 0; u.uTexel.value.set(1 / w, 1 / h);
+    u.uTan.value = Math.tan((cam.fov * Math.PI) / 360); u.uAspect.value = cam.aspect; u.uValid.value = T.valid ? 1 : 0; u.uTexel.value.set(1 / sw, 1 / sh);
     const r = this.renderer; r.setRenderTarget(T.a); r.render(T.scene, T.cam); r.setRenderTarget(null);
     T.prev.copy(rot); T.valid = true;
     [T.a, T.b] = [T.b, T.a];
@@ -884,14 +907,14 @@ export class Flight {
         // near the ground the planet fills the view and its fine detail needs full resolution (a reduced
         // buffer turns forest texture into staircases); higher up, sky and limb are soft and half-res is fine
         const lowCam = cp.length() - pl.R < 15000 / Math.sqrt(pl.atmK);
-        const ss = lowCam ? (this.resScale >= 0.9 ? 1 : Math.min(1, this.skyScale + 0.25)) : this.skyScale;
+        const ss = lowCam ? (this.resScale >= 0.9 ? 1 : Math.min(1, this.skyScale + 0.3)) : this.skyScale;
         const sw = Math.max(16, Math.round(this.pw * ss)), sh = Math.max(16, Math.round(this.ph * ss));
         this.renderTerrain(cam, cp, theta, sw, sh);
         if (!this.skyRT) this.skyRT = new THREE.WebGLRenderTarget(sw, sh, { type: THREE.HalfFloatType, depthBuffer: false });
         else if (this.skyRT.width !== sw || this.skyRT.height !== sh) this.skyRT.setSize(sw, sh);
         this.frameN = ((this.frameN || 0) + 1) % 64; this.sky.material.uniforms.uFrame.value = this.frameN;
         const r = this.renderer; r.setRenderTarget(this.skyRT); r.render(this.skyScene, cam); r.setRenderTarget(null);
-        this.scene.background = this.resolveSky(cam, sw, sh);
+        this.scene.background = this.resolveSky(cam, sw, sh, this.pw, this.ph);
       }
       this.renderPass.scene = this.scene; this.renderPass.camera = cam;
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = this.exposure;
@@ -924,7 +947,8 @@ export class Flight {
     ter.nearRange = Math.min(cam.far * 0.8, 20000);
     const sd = this.sunDir, sunF = new THREE.Vector3(c * sd.x - s * sd.z, sd.y, s * sd.x + c * sd.z);
     ter.update(camF, rel, fade, sunF);
-    su.uBush3D.value = ter.bushes && ter.bushes.update(camF, camAlt - ter.groundAt(cp, theta)) ? 1 : 0;
+    const agl = camAlt - ter.groundAt(cp, theta);
+    su.uBush3D.value = ter.bushes && ter.bushes.update(camF, agl) ? 1 : 0;
     ter.gMat.uniforms.uRelToClip.value.copy(rel); ter.gMat.uniforms.uFC.value = 2 / Math.log2(1e9 + 1);
     ter.sceneU.uCamScene.value.copy(cam.position); ter.sceneU.uRotS.value.setFromMatrix4(rotY);
     if (!this.gRT) this.gRT = new THREE.WebGLRenderTarget(sw, sh, { type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: true });
