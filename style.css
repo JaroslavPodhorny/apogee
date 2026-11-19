@@ -308,5 +308,5 @@ kbd { font: 600 11px/1 var(--text); display: inline-block; padding: 3px 5px 2px;
 #f-mapui b { font: 400 30px/1 var(--num); letter-spacing: 0.01em; color: var(--ink); }
 #f-mapui .warn b { color: #ffb347; }
 #f-labels .lbl { font: 500 12px var(--text); letter-spacing: 0.04em; color: var(--ink); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85); transform: translate(12px, -50%); }
-#f-labels .lbl.tag { font: 600 11px var(--text); letter-spacing: 0.1em; color: #ff8a5b; transform: translate(8px, -50%); }
+#f-labels .lbl.tag { font: 600 11px var(--text); letter-spacing: 0.1em; color: var(--ink-2); transform: translate(8px, -50%); }
 #f-labels .lbl.tag.warn { color: #ffb347; }

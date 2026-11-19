@@ -9,7 +9,6 @@ import { Terrain } from './terrain.js';
 import { cloudNoise, groundDetail } from './clouds.js';
 import { Smoke, Sparks, plumeMaterial, plumeGeo, fireballGeo, fireballMaterial, plasmaGeo, plasmaCapGeo, plasmaMaterials, vaporGeo, vaporMaterial } from './fx.js';
 import { Scatter } from './scatter.js';
-import { bakeMapHeights } from './terrain.js';
 import { gfx, onGfx } from './gfx.js';
 import { applyTone } from './style.js';
 import { PhysicalBloomPass, outputPass } from './post.js';
@@ -254,17 +253,17 @@ export class Flight {
     }
     this.orbitGeo = new THREE.BufferGeometry(); this.orbitGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(361 * 3), 3));
     // the orbit: bright in front of the globe, a faint trace where it passes behind it
-    this.orbitLine = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xff6a2e, transparent: true, opacity: 1 })); this.orbitLine.frustumCulled = false; this.orbitLine.renderOrder = 3; ms.add(this.orbitLine);
-    this.orbitBack = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xff6a2e, transparent: true, opacity: 0.28, depthTest: false })); this.orbitBack.frustumCulled = false; this.orbitBack.renderOrder = 2; ms.add(this.orbitBack);
+    this.orbitLine = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })); this.orbitLine.frustumCulled = false; this.orbitLine.renderOrder = 3; ms.add(this.orbitLine);
+    this.orbitBack = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, depthTest: false })); this.orbitBack.frustumCulled = false; this.orbitBack.renderOrder = 2; ms.add(this.orbitBack);
     // the ground track: where the craft will pass overhead over the next orbit (the planet turns under it)
     this.trackGeo = new THREE.BufferGeometry(); this.trackGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(400 * 3), 3)); this.trackGeo.setDrawRange(0, 0);
-    this.trackLine = new THREE.Line(this.trackGeo, new THREE.LineDashedMaterial({ color: 0xff6a2e, transparent: true, opacity: 0.55, dashSize: (pl.R / 1000) * 0.02, gapSize: (pl.R / 1000) * 0.012 }));
+    this.trackLine = new THREE.Line(this.trackGeo, new THREE.LineDashedMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, dashSize: (pl.R / 1000) * 0.02, gapSize: (pl.R / 1000) * 0.012 }));
     this.trackLine.frustumCulled = false; this.mapPlanet.userData.planet.add(this.trackLine);
     this.trackT = 1e9; this.mapUI = { track: true, focus: 'planet' };
     mu.mat.uniforms.uSite.value.copy(world.siteFixed);
     const sprite = (tex, s) => { const sp2 = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false })); sp2.scale.setScalar(s); sp2.renderOrder = 5; ms.add(sp2); return sp2; };
     this.mkVessel = sprite(dotTexture('#ffffff', true), 0.04);
-    this.mkAp = sprite(dotTexture('#ff6a2e'), 0.014); this.mkPe = sprite(dotTexture('#ff6a2e'), 0.014);
+    this.mkAp = sprite(dotTexture('#ffffff'), 0.012); this.mkPe = sprite(dotTexture('#ffffff'), 0.012);
     this.mkDebris = [];
     this.mapOrb = { az: 0.6, el: 0.5, dist: (pl.R / 1000) * 3.6 };
     this.map = false; $('f-mapui').hidden = true; $('flight-ui').classList.remove('mapmode'); this.paused = false; this.warpIdx = 0; this.hudT = 0; this.navT = 0; this.time = 0; this.drag = null;
@@ -905,13 +904,6 @@ export class Flight {
     this.map = !this.map; if (this.taa) this.taa.valid = false; $('f-map').classList.toggle('on', this.map); $('f-labels').innerHTML = ''; this.labels = {};
     // map mode: the flight instruments step aside; the globe, the orbit and one readout are the whole picture
     $('flight-ui').classList.toggle('mapmode', this.map); $('f-mapui').hidden = !this.map; this.trackT = 1e9;
-    // the game world's heights, baked once per world the first time the map opens
-    const kind = this.world.planet.kind, U = this.mapPlanet.userData.mat.uniforms;
-    if (this.map && this.terrain) {
-      this.mapHeights ||= {};
-      this.mapHeights[kind] ||= bakeMapHeights(this.renderer, this.terrain);
-      U.tHeight.value = this.mapHeights[kind].texture; U.uHasH.value = 1; U.uA.value = this.terrain.A;
-    }
   }
   setWarp(d) {
     const w = this.world;
