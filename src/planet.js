@@ -1292,7 +1292,10 @@ export function makeMapPlanet(radiusKm, atmKm, tex) {
     float cn = vnoise(n * 2200.0, 0) * 0.65 + vnoise(n * 7100.0, 0) * 0.35;
         float water = smoothstep(0.4, 0.6, dat.g + (cn - 0.5) * 0.55);
         vec3 hv = normalize(uSun + V);
-        float spec = pow(max(dot(w, hv), 0.0), 120.0) * 3.0 * water * (1.0 - cl);
+        // the sun's glint off the sea: a small, intense, energy-conserving highlight (narrow lobe, normalised,
+        // water's Fresnel reflectance of a few per cent), not a broad blown-out disc
+        float sh = 900.0, Fr = 0.02 + 0.98 * pow(1.0 - max(dot(hv, V), 0.0), 5.0);
+        float spec = (sh + 8.0) / (8.0 * PI) * pow(max(dot(w, hv), 0.0), sh) * Fr * water * (1.0 - cl);
         float day = smoothstep(-0.1, 0.15, nl);
         vec3 lit = uE / PI * max(nl, 0.0) * mix(vec3(1.0), vec3(1.0, 0.55, 0.3), pow(1.0 - max(nl, 0.0), 6.0));
         vec3 col = mix(alb * mix(1.0, 0.5, water), vec3(0.9), cl) * (lit + uE * 0.004) + uE * spec * max(nl, 0.0);
@@ -1313,7 +1316,8 @@ export function makeMapPlanet(radiusKm, atmKm, tex) {
     fragmentShader: /* glsl */`varying vec3 vW; varying vec3 vP; uniform vec3 uSun; uniform float uE;
       void main(){ vec3 v = normalize(cameraPosition - vP); float f = pow(1.0 - abs(dot(v, vW)), 4.0);
         float s = dot(normalize(vP), uSun); float day = smoothstep(-0.3, 0.25, s);
-        vec3 c = mix(vec3(1.0, 0.45, 0.2), vec3(0.3, 0.55, 1.0), smoothstep(-0.1, 0.35, s));
+        // blue over the day side; the warm band only along the terminator, where sunlight crosses the most air
+        vec3 c = mix(vec3(1.0, 0.45, 0.2), vec3(0.3, 0.55, 1.0), smoothstep(-0.2, 0.05, s));
         gl_FragColor = vec4(c * f * day * uE * 0.06, 1.0); }`,
   }));
   g.add(halo);

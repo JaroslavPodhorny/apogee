@@ -231,10 +231,26 @@ export class Flight {
     this.mapCam = new THREE.PerspectiveCamera(45, 1, 5, 5e7);
     this.mapPlanet = makeMapPlanet(pl.R / 1000, (pl.atmTop * 0.6) / 1000, this.tex); ms.add(this.mapPlanet);
     const mu = this.mapPlanet.userData; mu.mat.uniforms.uSun.value.copy(this.sunDir); mu.halo.material.uniforms.uSun.value.copy(this.sunDir);
-    const sg = new THREE.BufferGeometry(); const sp = new Float32Array(3000 * 3);
-    for (let i = 0; i < 3000; i++) { const v = new THREE.Vector3().randomDirection().multiplyScalar(2e7); sp.set([v.x, v.y, v.z], i * 3); }
-    sg.setAttribute('position', new THREE.BufferAttribute(sp, 3));
-    ms.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: new THREE.Color(1.5, 1.5, 1.5), size: 1.6, sizeAttenuation: false })));
+    // the star field behind the map: round soft points, a power law of brightness (a few bright, most faint),
+    // a hint of colour (blue-white hot stars, orange cool ones), a little denser along the Milky Way's band
+    {
+      const N = 4500, sg = new THREE.BufferGeometry(), sp = new Float32Array(N * 3), sc = new Float32Array(N * 3), ss = new Float32Array(N);
+      const band = new THREE.Vector3(0.32, 0.86, -0.4).normalize(), v = new THREE.Vector3();
+      for (let i = 0; i < N; i++) {
+        do { v.randomDirection(); } while (Math.random() > 0.35 + 0.65 * Math.exp(-((v.dot(band) / 0.25) ** 2)));
+        sp.set([v.x * 2e7, v.y * 2e7, v.z * 2e7], i * 3);
+        const b0 = 0.05 / (1 - 0.985 * Math.random()), t = Math.random();
+        const c = t < 0.2 ? [0.75, 0.85, 1] : t > 0.88 ? [1, 0.82, 0.62] : [1, 0.97, 0.92];
+        sc.set(c.map((x) => x * Math.min(b0, 4)), i * 3); ss[i] = 1.4 + Math.min(2.6, Math.sqrt(b0) * 1.3);
+      }
+      sg.setAttribute('position', new THREE.BufferAttribute(sp, 3)); sg.setAttribute('color', new THREE.BufferAttribute(sc, 3)); sg.setAttribute('size', new THREE.BufferAttribute(ss, 1));
+      const pts = new THREE.Points(sg, new THREE.ShaderMaterial({
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        vertexShader: 'attribute vec3 color; attribute float size; varying vec3 vC; void main(){ vC = color; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_PointSize = size; }',
+        fragmentShader: 'varying vec3 vC; void main(){ vec2 d = gl_PointCoord - 0.5; float f = exp(-dot(d, d) * 14.0); gl_FragColor = vec4(vC * f, 1.0); }',
+      }));
+      pts.frustumCulled = false; ms.add(pts);
+    }
     this.orbitGeo = new THREE.BufferGeometry(); this.orbitGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(361 * 3), 3));
     this.orbitLine = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xf3f1ec, transparent: true, opacity: 0.8 })); this.orbitLine.frustumCulled = false; ms.add(this.orbitLine);
     const sprite = (tex, s) => { const sp2 = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false })); sp2.scale.setScalar(s); sp2.renderOrder = 5; ms.add(sp2); return sp2; };
