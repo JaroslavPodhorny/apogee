@@ -30,6 +30,9 @@ const distHTML = (m) => { const s = fmtDist(Math.max(0, m)), i = s.lastIndexOf('
 const fmtTime = (s) => { if (!Number.isFinite(s)) return '—'; s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60; return `${h ? `${h}:` : ''}${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}`; };
 
 // colour of the light each propellant's flame throws on its surroundings
+// the flame's hot core as an invisible depth-only cone (unit length pointing down, radius in nozzle radii)
+const OCC_GEO = new THREE.CylinderGeometry(0.34, 0.16, 1, 16, 1, false).translate(0, -0.5, 0);
+const OCC_MAT = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: true });
 const FLAME_COL = [new THREE.Color(1, 0.62, 0.32), new THREE.Color(1, 0.8, 0.94), new THREE.Color(0.78, 0.86, 1)];
 function glowMaterial(core, tail) {
   return new THREE.ShaderMaterial({
@@ -372,9 +375,12 @@ export class Flight {
               const E = p.def.engine, solid = E.fuelType === 'solid';
               const mats = plumeMaterial(solid, E.chem ?? 0), pm = new THREE.Mesh(plumeGeo, mats.flame);
               const er = p.def.r * (p.def.shape === 'engine' ? (E.ispSl < 200 ? 0.95 : 0.8) : 0.8);
-              pm.scale.set(er, 1, er); pm.position.y = -p.def.len / 2; pm.visible = false; pm.userData.er = er; pm.frustumCulled = false; pm.renderOrder = 6;
-              const shell = new THREE.Mesh(plumeGeo, mats.shell); shell.scale.set(1.75, 1.05, 1.75); shell.frustumCulled = false; shell.renderOrder = 6; pm.add(shell);
-              const core = new THREE.Mesh(plumeGeo, mats.core); core.frustumCulled = false; core.renderOrder = 7; pm.add(core);
+              // drawn before the smoke, so smoke in front of the flame covers it; an invisible narrow cone along the
+              // flame's hot core writes depth first, so smoke behind the flame does not show through it
+              pm.scale.set(er, 1, er); pm.position.y = -p.def.len / 2; pm.visible = false; pm.userData.er = er; pm.frustumCulled = false; pm.renderOrder = 3;
+              const shell = new THREE.Mesh(plumeGeo, mats.shell); shell.scale.set(1.75, 1.05, 1.75); shell.frustumCulled = false; shell.renderOrder = 3; pm.add(shell);
+              const core = new THREE.Mesh(plumeGeo, mats.core); core.frustumCulled = false; core.renderOrder = 4; pm.add(core);
+              const occ = new THREE.Mesh(OCC_GEO, OCC_MAT); occ.frustumCulled = false; occ.renderOrder = 1; pm.add(occ); pm.userData.occ = occ;
               m.add(pm); m.userData.plume = pm;
               if (p.def.les) {
                 // four nozzles high on the tower, canted outward so the exhaust misses the capsule
@@ -433,14 +439,16 @@ export class Flight {
             un.uSpread.value = 1.55 + 0.35 * pw + 6 * vf * vf;
             // a real exhaust is long: it grows with the engine's thrust, not just its nozzle
             let L = (er * 15 + 5 * Math.sqrt(p.def.engine.thrust / 1e5)) * (solid ? 1.25 : 1) * (0.45 + 0.55 * pw) * (1 + 1.2 * vf);
+            this._Lfull = L;
             // the flame cannot go through the ground: it stops at the pad and spreads out there
             const hn = this.nozzleHeight(v, p);
             const Lg = Math.max(er * 1.2, hn + er * 0.6);
             if (L > Lg) { un.uSpread.value += 3.5 * (1 - Lg / L); L = Lg; }
             un.uLen.value = L;
+            if (pm.userData.occ) pm.userData.occ.scale.set(1, L * 0.55, 1);
             un.uDia.value = Math.max(L, er * 6) / (er * 2.6);
             if (v === world.active) { litCol.add(FLAME_COL[un.uChem.value | 0].clone().multiplyScalar(p.thrustNow)); thrustSum += p.thrustNow; litPos.addScaledVector(pm.getWorldPosition(gv), p.thrustNow); litDown.add(gn.set(0, -1, 0).applyQuaternion(pm.getWorldQuaternion(gq2)).multiplyScalar(p.thrustNow * er * 3)); }
-            if (pr > 0.015 && this.simDt > 0) { { const hag = Math.max(0, v.alt - (v.ground || 0)); this.emitSmoke(v, p, pw, pr, er, sAir, un.uLen.value * 0.45, hag); } this.trailKeys.add(p.id); }
+            if (pr > 0.015 && this.simDt > 0) { { const hag = Math.max(0, v.alt - (v.ground || 0)); this.emitSmoke(v, p, pw, pr, er, sAir, un.uLen.value * 0.6, hag, this._Lfull); } this.trailKeys.add(p.id); }
           }
         }
         if (p.def.deploy) m.scale.x = 0.07 + 0.93 * THREE.MathUtils.smoothstep(p.deployK, 0, 1);
@@ -541,7 +549,7 @@ export class Flight {
 
   nozzle(v, p) { return p.pos.clone().sub(v.com).addScaledVector(new THREE.Vector3(0, -1, 0).applyQuaternion(p.quat), p.def.les ? -p.def.len * 0.29 : p.def.len / 2).applyQuaternion(v.q).add(v.r); }
   nozzleHeight(v, p) { const noz = this.nozzle(v, p); return Math.max(0, noz.length() - this.world.planet.R - (v.ground || 0)); }
-  emitSmoke(v, p, pw, pr, er, sAir, offset = 0, hag = 1e9) {
+  emitSmoke(v, p, pw, pr, er, sAir, offset = 0, hag = 1e9, Lfull = 0) {
     const solid = p.def.engine.fuelType === 'solid', thin = 1 / Math.sqrt(Math.max(0.2, pr));
     const down = new THREE.Vector3(0, -1, 0).applyQuaternion(p.quat).applyQuaternion(v.q);
     const noz = p.pos.clone().sub(v.com).addScaledVector(new THREE.Vector3(0, -1, 0).applyQuaternion(p.quat), p.def.les ? -p.def.len * 0.29 : p.def.len / 2).applyQuaternion(v.q).add(v.r);
@@ -550,26 +558,32 @@ export class Flight {
     offset = Math.min(offset, hn * 0.7);
     // close to the ground the exhaust hits the pad and boils up into a towering cloud
     const gk = Math.max(0, 1 - hn / 35);
+    // while the jet still reaches the ground the smoke is made where it hits, not inside the flame; as the rocket
+    // climbs clear of it the trail takes over, starting just past the flame's bright core
+    const imp = 1 - THREE.MathUtils.smoothstep(hn, Lfull * 0.7, Lfull * 1.5 + 10);
     const size0 = er * (solid ? 3.0 : 2.3), size1 = (er * (solid ? 14 : 10) + (solid ? 10 : 6)) * thin * (1 + 1.3 * gk);
     const om = this.world.planet.omega, air = new THREE.Vector3(om * noz.z, 0, -om * noz.x);
     this.smoke.trail(p.id, noz, air, down, {
-      size0, size1, life: (solid ? 22 : 14) * (0.5 + 0.5 * pw) * (1 + 1.2 * gk), opacity: Math.min(1, pr * 3 * (solid ? 1 : 0.7) * (0.5 + 0.5 * pw) * (1 + 0.8 * gk)),
+      size0, size1, life: (solid ? 22 : 14) * (0.5 + 0.5 * pw) * (1 + 1.2 * gk), opacity: Math.min(1, pr * 3 * (solid ? 1 : 0.7) * (0.5 + 0.5 * pw)) * (1 - 0.9 * imp),
       push: 40 + 20 * gk, spacing: Math.max(size0 * 0.25, sAir / 220), minRate: (solid ? 40 : 30) * (1 + gk), offset,
       heat: gk > 0 ? 0.5 : 0.55,      // fresh exhaust still glows faintly where it leaves the flame, then cools to smoke
       // smoke leaves the end of the flame still moving with the rocket, then brakes: the trail continues the flame's line
       carry: gk > 0 ? null : v.v.clone().sub(air).multiplyScalar(0.9),   // near the pad the exhaust slams into the ground instead
     }, this.simDt);
     // liftoff: the water deluge flashes to steam and great white billows roll out across the pad in every direction
-    if (gk > 0.15 && this.simDt > 0) {
+    if (imp > 0.02 && this.simDt > 0) {
       const up = noz.clone().normalize(), e1 = new THREE.Vector3().crossVectors(up, Math.abs(up.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize(), e2 = new THREE.Vector3().crossVectors(up, e1);
       const g0 = noz.clone().addScaledVector(up, -hn);
-      const n = Math.min(6, Math.floor((this.billowAcc = (this.billowAcc || 0) + this.simDt * 26 * gk * (0.4 + 0.6 * pw) * (solid ? 1.3 : 1))));
+      const n = Math.min(8, Math.floor((this.billowAcc = (this.billowAcc || 0) + this.simDt * 38 * imp * (0.4 + 0.6 * pw) * (solid ? 1.3 : 1))));
       this.billowAcc -= n;
       for (let i = 0; i < n; i++) {
         const a = Math.random() * Math.PI * 2, dir = e1.clone().multiplyScalar(Math.cos(a)).addScaledVector(e2, Math.sin(a));
-        const pos = g0.clone().addScaledVector(dir, er * (2 + Math.random() * 4)).addScaledVector(up, er * (1 + Math.random() * 2));
-        const vel = dir.multiplyScalar(22 + Math.random() * 26).addScaledVector(up, 2 + Math.random() * 6).add(air);
-        this.smoke.emit(pos, vel, er * 4 + 3, (er * 10 + 22) * (0.8 + Math.random() * 0.5), 18 + Math.random() * 14, 0.35, g0, Math.min(1, 0.75 * (0.5 + 0.5 * pw)));
+        // born at the edge of the splash, already racing outward along the ground, hot and lit by the flame
+        const sp = Math.max(er * 2, (Lfull - hn) * 0.25 + er * 2);
+        const pos = g0.clone().addScaledVector(dir, sp * (0.8 + Math.random() * 0.6)).addScaledVector(up, er * (0.6 + Math.random() * 1.5));
+        const vel = dir.multiplyScalar(25 + Math.random() * 30).addScaledVector(up, 1 + Math.random() * 7).add(air);
+        const id = this.smoke.emit(pos, vel, er * 3 + 2, (er * 10 + 24) * (0.8 + Math.random() * 0.5), 18 + Math.random() * 14, 0.8, g0, Math.min(1, 0.8 * (0.5 + 0.5 * pw)) * imp);
+        this.smoke.f[id * 10 + 8] = 1;     // already on the ground: it billows up from here
       }
     }
   }

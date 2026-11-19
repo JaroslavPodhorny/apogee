@@ -234,7 +234,7 @@ export class Smoke {
     for (let s = 0; s < n; s++) {
       const i = ord[s], k = i * 3, j = i * 10, age = f[j], t = age / f[j + 1];
       P[s * 3] = p[k] - origin.x; P[s * 3 + 1] = p[k + 1] - origin.y; P[s * 3 + 2] = p[k + 2] - origin.z;
-      const fi = Math.min(1, age / (f[j + 9] > 0 ? 0.02 : 0.12)), fo = 1 - Math.max(0, (t - 0.45) / 0.55);
+      const fi = Math.min(1, age / (f[j + 9] > 0 ? 0.35 : 0.18)), fo = 1 - Math.max(0, (t - 0.45) / 0.55);
       D[s * 4] = f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-age * 1.6)) + age * 0.35;
       D[s * 4 + 1] = fi * fi * (3 - 2 * fi) * fo * fo * 0.7 * f[j + 6];
       D[s * 4 + 2] = f[j + 4] * Math.exp(-age * (f[j + 8] > 0 ? 1.4 : 4));
@@ -246,7 +246,7 @@ export class Smoke {
     // ground plane in view space, for the soft fade where puffs meet it
     const u = this.mat.uniforms, vm = camera.matrixWorldInverse;
     const FL = this.flameLight;
-    if (FL && FL.intensity > 0) { u.uFlameV.value.copy(FL.position).applyMatrix4(vm); u.uFlameI.value = FL.intensity * 0.5; u.uFlameCol.value.copy(FL.color); } else u.uFlameI.value = 0;
+    if (FL && FL.intensity > 0) { u.uFlameV.value.copy(FL.position).applyMatrix4(vm); u.uFlameI.value = FL.intensity * 0.9; u.uFlameCol.value.copy(FL.color); } else u.uFlameI.value = 0;
     if (groundUp) {
       u.uUpV.value.copy(groundUp).transformDirection(vm);
       const gp = groundUp.clone().multiplyScalar(groundDist).applyMatrix4(vm);
