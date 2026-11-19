@@ -42,7 +42,7 @@ export class Smoke {
     const attr = (n) => { const a = new THREE.InstancedBufferAttribute(new Float32Array(MAX * n), n); a.setUsage(THREE.DynamicDrawUsage); return a; };
     g.setAttribute('iPos', (this.aPos = attr(3)));
     g.setAttribute('iData', (this.aData = attr(4))); // size, alpha, heat, rotation
-    g.setAttribute('iVar', (this.aVar = attr(1)));  // atlas cell
+    g.setAttribute('iVar', (this.aVar = attr(1)));  // atlas cell (0-3) + 4 × soot (0-7)
     g.instanceCount = 0;
     this.mat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false,
@@ -53,14 +53,15 @@ export class Smoke {
       vertexShader: /* glsl */`
         attribute vec3 iPos; attribute vec4 iData; attribute float iVar;
         uniform vec3 uSunV, uUpV, uFlameV; uniform float uGroundD, uFlameI;
-        varying vec2 vUv; varying vec2 vCell; varying vec2 vLight; varying float vA, vH, vGround; varying vec2 vRot0; varying float vFl; varying vec3 vFd;
+        varying vec2 vUv; varying vec2 vCell; varying vec2 vLight; varying float vA, vH, vGround, vSoot; varying vec2 vRot0; varying float vFl; varying vec3 vFd;
         void main() {
           vec4 mv = modelViewMatrix * vec4(iPos, 1.0);
           vec3 dF = uFlameV - mv.xyz; vFl = uFlameI / (dot(dF, dF) * 0.6 + iData.x * iData.x * 0.1 + 1.0); vFd = normalize(dF + vec3(0.0, 0.0, 1e-3));
           float c = cos(iData.w), s = sin(iData.w);
           mv.xy += position.xy * iData.x;
           vUv = mat2(c, -s, s, c) * position.xy + 0.5;
-          vCell = vec2(mod(iVar, 2.0), floor(iVar / 2.0)) * 0.5;
+          float cell = mod(iVar, 4.0); vSoot = floor(iVar / 4.0 + 0.01) / 7.0;
+          vCell = vec2(mod(cell, 2.0), floor(cell / 2.0)) * 0.5;
           vec2 l = uSunV.xy; float ll = length(l); l = ll > 1e-4 ? l / ll : vec2(0.0, 1.0);
           vLight = mat2(c, -s, s, c) * l; vRot0 = vec2(c, s);
           vA = iData.y; vH = iData.z;
@@ -69,7 +70,7 @@ export class Smoke {
         }`,
       fragmentShader: /* glsl */`
         uniform sampler2D tPuff; uniform vec3 uSunCol, uAmb, uSunV;
-        varying vec2 vUv; varying vec2 vCell; varying vec2 vLight; varying float vA, vH, vGround;
+        varying vec2 vUv; varying vec2 vCell; varying vec2 vLight; varying float vA, vH, vGround, vSoot;
         uniform vec3 uUpV, uFlameCol, uTint, uHeatCol;
         varying vec2 vRot0; varying float vFl; varying vec3 vFd;
         vec2 tx(vec2 uv) { return vCell + clamp(uv, 0.002, 0.998) * 0.5; }
@@ -91,7 +92,8 @@ export class Smoke {
           // light through thin edges when looking toward the sun
           float back = pow(max(-uSunV.z, 0.0), 3.0) * (1.0 - d) * 1.6;
           float sky = 0.55 + 0.45 * dot(n, uUpV);
-          vec3 col = 0.9 / 3.14159 * (uSunCol * (wrap * self + back) + uAmb * (0.3 + 0.75 * sky)) * uTint;
+          // sooty smoke (burning propellant) is dark grey-brown, exhaust and steam white
+          vec3 col = 0.9 / 3.14159 * (uSunCol * (wrap * self + back) + uAmb * (0.3 + 0.75 * sky)) * uTint * mix(vec3(1.0), vec3(0.11, 0.1, 0.09), vSoot);
           // glowing exhaust: yellow-white where it is hottest, deep orange as it cools
           col += mix(uHeatCol, vec3(1.0, 0.72, 0.35), vH) * vH * vH * (0.6 + 0.4 * d) * 6.0;
           // underlit by the flame: warm on the side that faces it, golden close in, deep orange farther out
@@ -105,11 +107,11 @@ export class Smoke {
     this.n = 0;
     this.p = new Float64Array(MAX * 3); this.v = new Float64Array(MAX * 3); this.e = new Float64Array(MAX * 3);
     this.f = new Float32Array(MAX * 10); // age, life, size0, size1, heat0, seed, opacity, spin, hit the ground, carried by the jet
-    this.depth = new Float32Array(MAX);
+    this.depth = new Float32Array(MAX); this.soot = new Uint8Array(MAX);
     this.trails = new Map();
   }
   clear() { this.n = 0; this.geo.instanceCount = 0; this.trails.clear(); }
-  emit(pos, vel, size0, size1, life, heat, emitter, opacity = 1) {
+  emit(pos, vel, size0, size1, life, heat, emitter, opacity = 1, soot = 0) {
     let i = this.n;
     if (i >= MAX) { // full: reuse the most faded of a few random slots
       let best = 0, ba = -1;
@@ -121,7 +123,7 @@ export class Smoke {
     const e = emitter || pos; this.e[i * 3] = e.x; this.e[i * 3 + 1] = e.y; this.e[i * 3 + 2] = e.z;
     const f = this.f, j = i * 10;
     f[j] = 0; f[j + 1] = life; f[j + 2] = size0; f[j + 3] = size1; f[j + 4] = heat; f[j + 5] = Math.random();
-    f[j + 6] = opacity; f[j + 7] = (Math.random() - 0.5) * 0.5; f[j + 8] = 0; f[j + 9] = 0;
+    f[j + 6] = opacity; f[j + 7] = (Math.random() - 0.5) * 0.5; f[j + 8] = 0; f[j + 9] = 0; this.soot[i] = Math.round(Math.min(1, soot) * 7);
     return i;
   }
   // Lay puffs evenly along the path the nozzle took through the air since last frame.
@@ -177,6 +179,7 @@ export class Smoke {
         n--; const m = n * 3, mj = n * 10;
         for (let c = 0; c < 3; c++) { p[k + c] = p[m + c]; v[k + c] = v[m + c]; e[k + c] = e[m + c]; }
         for (let c = 0; c < 10; c++) f[j + c] = f[mj + c];
+        this.soot[i] = this.soot[n];
         i--; continue;
       }
       const x = p[k], y = p[k + 1], z = p[k + 2];
@@ -239,7 +242,7 @@ export class Smoke {
       D[s * 4 + 1] = fi * fi * (3 - 2 * fi) * fo * fo * 0.7 * f[j + 6];
       D[s * 4 + 2] = f[j + 4] * Math.exp(-age * (f[j + 8] > 0 ? 1.4 : 4));
       D[s * 4 + 3] = f[j + 5] * 6.2832 + age * f[j + 7];
-      Vv[s] = Math.floor(f[j + 5] * 4) % 4;
+      Vv[s] = Math.floor(f[j + 5] * 4) % 4 + 4 * this.soot[i];
     }
     this.geo.instanceCount = n;
     for (const a of [this.aPos, this.aData, this.aVar]) { a.needsUpdate = true; a.clearUpdateRanges(); a.addUpdateRange(0, Math.max(1, n) * a.itemSize); }
@@ -268,6 +271,22 @@ export class Smoke {
 // close. Colour is blackbody from a temperature field, brightness ∝ T⁴. Sooty exhaust is optically thick,
 // so the flame both glows and hides what is behind it (premultiplied blending). A faint additive shell
 // around it is the hot air glowing.
+// value noise, fractal noise and blackbody colour, shared by the flame, the fireball and the re-entry plasma
+const FX_GLSL = /* glsl */`
+  float h3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+  float vn3(vec3 x) {
+    vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(h3(i), h3(i + vec3(1, 0, 0)), f.x), mix(h3(i + vec3(0, 1, 0)), h3(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(h3(i + vec3(0, 0, 1)), h3(i + vec3(1, 0, 1)), f.x), mix(h3(i + vec3(0, 1, 1)), h3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+  }
+  float fbm(vec3 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { s += a * vn3(p); p = p * 2.07 + vec3(1.7, 9.2, 3.1); a *= 0.5; } return s / 0.96875; }
+  vec3 bb(float T) {
+    float t = T / 100.0;
+    float g = t <= 66.0 ? 0.39008 * log(max(t, 1.0)) - 0.63184 : 1.12989 * pow(max(t - 60.0, 1.0), -0.07551);
+    float b = t <= 19.0 ? 0.0 : 0.54321 * log(max(t - 10.0, 1.0)) - 1.19625;
+    return clamp(vec3(1.0, g, b), 0.0, 1.0);
+  }
+`;
 export const plumeGeo = new THREE.CylinderGeometry(1, 1, 1, 48, 160, true).translate(0, -0.5, 0);
 const PLUME_VERT = /* glsl */`
   uniform float uSpread, uLen, uTime, uDia, uVac, uSolid; varying float vT, vF, vRad; varying vec2 vQ;
@@ -300,19 +319,7 @@ const PLUME_VERT = /* glsl */`
   }`;
 const PLUME_FRAG = /* glsl */`
   uniform float uPower, uTime, uVac, uSolid, uDia, uLen, uR0, uChem; varying float vT, vF, vRad; varying vec2 vQ;
-  float h3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
-  float vn3(vec3 x) {
-    vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(mix(h3(i), h3(i + vec3(1, 0, 0)), f.x), mix(h3(i + vec3(0, 1, 0)), h3(i + vec3(1, 1, 0)), f.x), f.y),
-               mix(mix(h3(i + vec3(0, 0, 1)), h3(i + vec3(1, 0, 1)), f.x), mix(h3(i + vec3(0, 1, 1)), h3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
-  }
-  float fbm(vec3 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { s += a * vn3(p); p = p * 2.07 + vec3(1.7, 9.2, 3.1); a *= 0.5; } return s / 0.96875; }
-  vec3 bb(float T) {
-    float t = T / 100.0;
-    float g = t <= 66.0 ? 0.39008 * log(max(t, 1.0)) - 0.63184 : 1.12989 * pow(max(t - 60.0, 1.0), -0.07551);
-    float b = t <= 19.0 ? 0.0 : 0.54321 * log(max(t - 10.0, 1.0)) - 1.19625;
-    return clamp(vec3(1.0, g, b), 0.0, 1.0);
-  }
+  ${FX_GLSL}
   void main() {
     float t = clamp(vT, 0.0, 1.0), u = 1.0 - t, f = clamp(vF, 0.0, 1.0);
     float q = sqrt(max(0.0, 1.0 - f * f));          // projected distance from the axis: 0 centre, 1 silhouette
@@ -391,4 +398,263 @@ export function plumeMaterial(solid, chem = 0) {
       : { blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor, side: THREE.FrontSide }),
   });
   return { flame: mk('flame'), shell: mk('shell'), core: mk('core'), uniforms };
+}
+
+// ---------- sparks: embers, flashes, glints, gas puffs ----------
+// A light particle system for everything that glows or glints: ablation embers off a heat shield, burning debris
+// from an explosion, the flash of a pyro bolt, ice crystals catching the sun as a stage separates, RCS gas.
+// · simulated on the CPU in doubles (planet-centred frame), drawn relative to the floating origin
+// · gravity, and air drag that grows with the air's density, so embers in thin air streak far behind
+// · additive, so no sorting: one instanced draw for all of them
+// · each one is a streak stretched along its motion as seen by the camera (which rides with the active craft):
+//   real motion blur, so fast embers read as lines and slow glints as points
+// · embers cool as they fade: white-yellow, orange, deep red (their colour is heat, not paint)
+export class Sparks {
+  constructor(max = 4000) {
+    this.max = max; this.n = 0; this.budget = 1;
+    const base = new THREE.PlaneGeometry(1, 1);
+    const g = (this.geo = new THREE.InstancedBufferGeometry());
+    g.index = base.index; g.attributes.position = base.attributes.position;
+    const attr = (n) => { const a = new THREE.InstancedBufferAttribute(new Float32Array(max * n), n); a.setUsage(THREE.DynamicDrawUsage); return a; };
+    g.setAttribute('iPos', (this.aPos = attr(3)));
+    g.setAttribute('iVel', (this.aVel = attr(3)));   // motion relative to the camera, m/s
+    g.setAttribute('iCol', (this.aCol = attr(4)));   // HDR colour, size
+    g.instanceCount = 0;
+    this.mat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      uniforms: { uBlur: { value: 1 / 60 }, uPixW: { value: 0.002 } },
+      vertexShader: /* glsl */`
+        attribute vec3 iPos, iVel; attribute vec4 iCol;
+        uniform float uBlur, uPixW;
+        varying vec2 vQ; varying vec3 vC; varying float vLen;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(iPos, 1.0);
+          vec3 vv = mat3(modelViewMatrix) * iVel;
+          // smear over the exposure time, in the screen plane
+          float w = max(iCol.w, -mv.z * uPixW);           // never thinner than about a pixel: they shimmer instead
+          vec2 s = vv.xy * uBlur; float sl = min(length(s), w * 40.0);
+          float L = w + sl;
+          vec2 ax = length(s) > 1e-4 ? normalize(s) : vec2(0.0, 1.0), px = vec2(-ax.y, ax.x);
+          mv.xy += px * position.x * w + ax * position.y * L;
+          vQ = vec2(position.x, position.y * L / w); vLen = L / w;
+          // a long streak spreads its light (fainter); a spark smaller than a pixel is dimmer, but only linearly:
+          // hot sparks are so bright they read even when tiny
+          vC = iCol.rgb * (iCol.w / w) * (1.0 / (1.0 + 0.5 * (vLen - 1.0)));
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: /* glsl */`
+        varying vec2 vQ; varying vec3 vC; varying float vLen;
+        void main() {
+          // a round head and a soft tail: distance to a segment, capsule falloff
+          float y = clamp(vQ.y, -0.5 * (vLen - 1.0), 0.5 * (vLen - 1.0));
+          vec2 d = vec2(vQ.x, vQ.y - y) * 2.0;
+          float f = exp(-dot(d, d) * 3.5);
+          if (f < 0.01) discard;
+          gl_FragColor = vec4(vC * f, 1.0);
+        }`,
+    });
+    this.mesh = new THREE.Mesh(g, this.mat);
+    this.mesh.frustumCulled = false; this.mesh.renderOrder = 6;
+    this.p = new Float64Array(max * 3); this.v = new Float32Array(max * 3);
+    this.f = new Float32Array(max * 10);   // age, life, size, r, g, b, drag, cool, grow, flicker seed
+  }
+  clear() { this.n = 0; this.geo.instanceCount = 0; }
+  // pos, vel: planet-centred (Vector3). col: HDR [r,g,b]. drag: 1/s at sea-level density. cool: 0 neutral fade, 1 an ember, -1 a tumbling glint
+  emit(pos, vel, life, size, col, drag = 0, cool = 0, grow = 0) {
+    if (this.n >= this.max) return -1;
+    const i = this.n++, k = i * 3, j = i * 10;
+    this.p[k] = pos.x; this.p[k + 1] = pos.y; this.p[k + 2] = pos.z;
+    this.v[k] = vel.x; this.v[k + 1] = vel.y; this.v[k + 2] = vel.z;
+    const f = this.f;
+    f[j] = 0; f[j + 1] = life; f[j + 2] = size; f[j + 3] = col[0]; f[j + 4] = col[1]; f[j + 5] = col[2]; f[j + 6] = drag; f[j + 7] = cool; f[j + 8] = grow; f[j + 9] = Math.random() * 100;
+    return i;
+  }
+  // how many of `n` to really make at the current effects quality
+  count(n) { const x = n * this.budget; return Math.floor(x) + (Math.random() < x % 1 ? 1 : 0); }
+
+  update(dt, planet, origin, camera, camVel, blur) {
+    const p = this.p, v = this.v, f = this.f, mu = planet.mu, om = planet.omega, R = planet.R;
+    let n = this.n;
+    const P = this.aPos.array, V = this.aVel.array, C = this.aCol.array;
+    let s = 0;
+    for (let i = 0; i < n; i++) {
+      const k = i * 3, j = i * 10;
+      f[j] += dt;
+      if (f[j] >= f[j + 1]) {
+        n--; const m = n * 3, mj = n * 10;
+        p[k] = p[m]; p[k + 1] = p[m + 1]; p[k + 2] = p[m + 2]; v[k] = v[m]; v[k + 1] = v[m + 1]; v[k + 2] = v[m + 2];
+        for (let c = 0; c < 10; c++) f[j + c] = f[mj + c];
+        i--; continue;
+      }
+      const x = p[k], y = p[k + 1], z = p[k + 2], r2 = x * x + y * y + z * z, r = Math.sqrt(r2), gk = -mu / (r2 * r);
+      // drag toward the air (which turns with the planet), stronger in denser air
+      const dr = f[j + 6];
+      if (dr > 0) {
+        const rho = planet.pressure(r - R);
+        if (rho > 0) { const a = 1 - Math.exp(-dt * dr * rho); v[k] += (om * z - v[k]) * a; v[k + 1] += (0 - v[k + 1]) * a; v[k + 2] += (-om * x - v[k + 2]) * a; }
+      }
+      v[k] += x * gk * dt; v[k + 1] += y * gk * dt; v[k + 2] += z * gk * dt;
+      p[k] += v[k] * dt; p[k + 1] += v[k + 1] * dt; p[k + 2] += v[k + 2] * dt;
+      if (r < R - 50) { f[j] = f[j + 1]; continue; }
+      const t = f[j] / f[j + 1], fo = (1 - t), cool = f[j + 7];
+      // embers: brightness and colour fall together (cooling); others just fade, with a quick fade-in
+      const fl = 0.75 + 0.25 * Math.sin(f[j + 9] + f[j] * 31);
+      let b = (cool > 0 ? fo * fo * fl : fo * Math.min(1, f[j] * 20));
+      if (cool < 0) { const g = 0.5 + 0.5 * Math.sin(f[j + 9] + f[j] * (6 + f[j + 9] % 7)); b *= 0.25 + 1.6 * g * g * g * g; }   // tumbling glints flash
+      C[s * 4] = f[j + 3] * b; C[s * 4 + 1] = f[j + 4] * b * (cool > 0 ? Math.pow(fo, 0.8 * cool) : 1); C[s * 4 + 2] = f[j + 5] * b * (cool > 0 ? Math.pow(fo, 2.2 * cool) : 1);
+      C[s * 4 + 3] = f[j + 2] * (1 + f[j + 8] * f[j]);
+      P[s * 3] = x - origin.x; P[s * 3 + 1] = y - origin.y; P[s * 3 + 2] = z - origin.z;
+      V[s * 3] = v[k] - camVel.x; V[s * 3 + 1] = v[k + 1] - camVel.y; V[s * 3 + 2] = v[k + 2] - camVel.z;
+      s++;
+    }
+    this.n = n;
+    this.geo.instanceCount = s;
+    for (const a of [this.aPos, this.aVel, this.aCol]) { a.needsUpdate = true; a.clearUpdateRanges(); a.addUpdateRange(0, Math.max(1, s) * a.itemSize); }
+    const u = this.mat.uniforms;
+    u.uBlur.value = blur;
+    u.uPixW.value = 1.6 * 2 * Math.tan((camera.fov * Math.PI) / 360) / Math.max(1, this.viewH || 800);
+  }
+}
+
+// ---------- fireball: a crashing stage's propellant going up ----------
+// A lumpy ball of burning gas (noise-displaced, churning), white-yellow at first and cooling through orange to
+// a dark sooty red. Its edge is soot: it glows and also hides what is behind it (premultiplied blending).
+export const fireballGeo = new THREE.IcosahedronGeometry(1, 4);
+export function fireballMaterial() {
+  return new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false,
+    blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+    uniforms: { uAge: { value: 0 }, uTime: { value: 0 }, uSeed: { value: Math.random() * 50 } },
+    vertexShader: /* glsl */`
+      uniform float uAge, uTime, uSeed; varying vec3 vP; varying float vF, vD;
+      ${FX_GLSL}
+      void main() {
+        vec3 n = normalize(position);
+        // billows: big lobes and smaller ones, rolling outward as it grows
+        float d = fbm(n * 2.2 + vec3(uSeed, uSeed * 0.7, uTime * 0.35 - uAge * 1.5));
+        vD = d;
+        vec3 p = n * (0.55 + 0.9 * d);
+        vP = n * 2.2 + uSeed;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vF = abs(dot(normalize(normalMatrix * n), normalize(-mv.xyz)));
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */`
+      uniform float uAge, uTime; varying vec3 vP; varying float vF, vD;
+      ${FX_GLSL}
+      void main() {
+        float a = clamp(uAge, 0.0, 1.0);
+        float n = fbm(vP * 2.4 + vec3(0.0, 0.0, uTime * 0.8 - a * 2.0));
+        // hottest in the core of each billow (seen face-on), coolest in the folds and at the rim
+        float core = vF * (0.5 + 0.8 * vD) + (n - 0.5) * 1.1;
+        float T = mix(2900.0, 800.0, pow(a, 0.6)) * (0.4 + 0.85 * clamp(core, 0.0, 1.0));
+        float I = pow(T / 3000.0, 3.0) * 2.4;
+        // the burning gas burns out from the outside in; soot is left
+        float burn = smoothstep(a * 1.25 - 0.15, a * 1.25 + 0.15, core);
+        float soot = (1.0 - burn) * smoothstep(0.0, 0.25, a);
+        vec3 col = bb(T) * I * burn + vec3(0.02, 0.018, 0.016) * soot;
+        float alpha = clamp((burn * 0.95 + soot * 0.9) * (1.0 - smoothstep(0.55, 1.0, a)) * smoothstep(0.05, 0.35, vF + 0.15), 0.0, 1.0);
+        gl_FragColor = vec4(col * (1.0 - smoothstep(0.7, 1.0, a)), alpha);
+      }`,
+  });
+}
+
+// ---------- re-entry plasma ----------
+// Air hitting the heat shield at several km/s is compressed and heated to thousands of kelvin: a glowing shock
+// cap stands just ahead of the shield, and the hot gas streams back round the craft as a sheath of filaments,
+// brightest at the edges (you look through more of it there), torn into wisps behind. Weak heating glows deep
+// orange-red; strong heating goes pink-white. The cap and the sheath share one material set.
+export const plasmaCapGeo = new THREE.SphereGeometry(1, 36, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+export const plasmaGeo = new THREE.CylinderGeometry(1, 1, 1, 36, 24, true).translate(0, -0.5, 0);
+export function plasmaMaterials() {
+  const uniforms = { uHeat: { value: 0 }, uTime: { value: 0 }, uLen: { value: 10 }, uWid: { value: 2 }, uSpread: { value: 1.6 } };
+  const vert = /* glsl */`
+    uniform float uLen, uSpread, uTime; varying float vT, vF; varying vec2 vQ;
+    void main() {
+      vec3 p = position;
+      float ang = atan(position.z, position.x);
+    #ifdef CAP
+      vT = 0.0; vQ = vec2(ang, position.y);
+    #else
+      float t = -p.y; vT = t;
+      p.xz *= mix(1.0, uSpread, pow(max(t, 0.0), 0.7)) * (1.0 + 0.04 * sin(uTime * 23.0 + t * 9.0 + ang * 2.0));
+      p.y *= uLen;
+      vQ = vec2(ang, t);
+    #endif
+      vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    #ifdef CAP
+      vec3 n = normalize(normalMatrix * normalize(position));
+    #else
+      vec3 n = normalize(normalMatrix * normalize(vec3(position.x, 0.0, position.z)));
+    #endif
+      vF = abs(dot(n, normalize(-mv.xyz)));
+      gl_Position = projectionMatrix * mv;
+    }`;
+  const frag = /* glsl */`
+    uniform float uHeat, uTime, uLen, uWid; varying float vT, vF; varying vec2 vQ;
+    ${FX_GLSL}
+    void main() {
+      float h = clamp(uHeat, 0.0, 1.0), fl = 0.85 + 0.15 * sin(uTime * 41.0) * sin(uTime * 17.3);
+    #ifdef CAP
+      // the shock layer: brightest straight ahead, a hot rim where it wraps round the shield's edge
+      float n = fbm(vec3(cos(vQ.x) * 3.0, sin(vQ.x) * 3.0, vQ.y * 2.0 - uTime * 3.0));
+      float a = (0.35 + 0.65 * vF * vF) * (0.7 + 0.6 * n) * smoothstep(0.0, 0.25, h);
+      vec3 c = mix(vec3(1.0, 0.42, 0.12), vec3(1.0, 0.8, 0.62), h * (0.7 + 0.4 * n)) * mix(1.2, 4.5, h);
+      gl_FragColor = vec4(c * a * fl, 1.0);
+    #else
+      float t = clamp(vT, 0.0, 1.0), u = 1.0 - t;
+      // filaments: noise stretched along the flow, racing downstream
+      vec3 P = vec3(cos(vQ.x) * 1.6, sin(vQ.x) * 1.6, t * uLen / max(uWid, 0.5) * 0.35 - uTime * 9.0);
+      float n1 = fbm(P * vec3(1.0, 1.0, 0.45)), n2 = fbm(P * vec3(3.0, 3.0, 0.9) + 7.3);
+      float fil = smoothstep(0.46 + 0.2 * t, 0.7, n1 * 0.6 + n2 * 0.4 + 0.15 * u);
+      fil *= 0.6 + 0.8 * n2;
+      float sheath = 0.15 + 0.85 * pow(max(1.0 - vF, 0.0), 1.6);                 // seen edge-on, the sheath is thick
+      float a = pow(u, 1.5) * sheath * fil * smoothstep(0.0, 0.04, t);
+      // colour by how hot the gas still is: near the shield yellow-white, then orange; downstream the air's own
+      // glow (nitrogen, oxygen) shows as it cools: pink to violet
+      float tc = clamp(t * 1.4 + (1.0 - h) * 0.25 + (n2 - 0.5) * 0.35, 0.0, 1.0);
+      vec3 col = tc < 0.45 ? mix(vec3(1.0, 0.78, 0.5), vec3(1.0, 0.4, 0.1), tc / 0.45) : mix(vec3(1.0, 0.4, 0.1), vec3(0.85, 0.22, 0.5), (tc - 0.45) / 0.55);
+      vec3 c = col * mix(0.9, 3.2, h) * (0.6 + 0.8 * u);
+      gl_FragColor = vec4(c * a * fl * smoothstep(0.0, 0.2, h), 1.0);
+    #endif
+    }`;
+  const mk = (cap) => new THREE.ShaderMaterial({
+    uniforms, defines: cap ? { CAP: 1 } : {}, vertexShader: vert, fragmentShader: frag,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: cap ? THREE.FrontSide : THREE.DoubleSide,
+  });
+  return { sheath: mk(false), cap: mk(true), uniforms };
+}
+
+// ---------- vapour cone ----------
+// Near Mach 1 in humid air the pressure drops where the flow speeds round the rocket's shoulder, the air cools
+// below its dew point and a shroud of cloud flashes into being, with a sharp front edge (the shock) and a
+// ragged trailing edge. It is cloud, not light: lit by the sun and the sky like the smoke.
+export const vaporGeo = new THREE.CylinderGeometry(1, 1.9, 1, 48, 10, true).translate(0, -0.5, 0);
+export function vaporMaterial(sunCol, amb) {
+  return new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    uniforms: { uK: { value: 0 }, uTime: { value: 0 }, uSunCol: { value: sunCol }, uAmb: { value: amb } },
+    vertexShader: /* glsl */`
+      uniform float uTime; varying float vT, vF; varying vec2 vQ;
+      void main() {
+        float ang = atan(position.z, position.x); vT = -position.y; vQ = vec2(ang, vT);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vF = abs(dot(normalize(normalMatrix * vec3(position.x, 0.25, position.z)), normalize(-mv.xyz)));
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */`
+      uniform float uK, uTime; uniform vec3 uSunCol, uAmb; varying float vT, vF; varying vec2 vQ;
+      ${FX_GLSL}
+      void main() {
+        float t = clamp(vT, 0.0, 1.0);
+        // wisps streaked along the flow, at two sizes
+        float n = fbm(vec3(cos(vQ.x) * 3.0, sin(vQ.x) * 3.0, t * 2.5 - uTime * 5.0)) * 0.6
+                + fbm(vec3(cos(vQ.x) * 9.0, sin(vQ.x) * 9.0, t * 4.0 - uTime * 9.0) + 5.0) * 0.4;
+        float front = smoothstep(0.0, 0.06, t);
+        float back = 1.0 - smoothstep(0.15, 0.8, t + (n - 0.5) * 0.9);
+        float a = front * back * (0.3 + 0.7 * pow(max(1.0 - vF, 0.0), 1.5)) * smoothstep(0.25, 0.75, n + 0.25 * (1.0 - t)) * uK;
+        vec3 c = 0.9 / 3.14159 * (uSunCol * (0.55 + 0.35 * n) + uAmb * 1.2);
+        gl_FragColor = vec4(c, clamp(a, 0.0, 0.85));
+      }`,
+  });
 }

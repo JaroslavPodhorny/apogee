@@ -4,12 +4,12 @@ const KEY = 'apogee.gfx';
 
 // res: share of the screen's pixels the 3D view renders at ('auto' adapts to the frame time).
 // sky: resolution of the sky / ground / cloud pass relative to the view (the frame's most expensive pixels).
-// shadows: shadow map size (0 = none). msaa: samples on the HDR frame.
+// shadows: shadow map size (0 = none). msaa: samples on the HDR frame. fx: particle effects budget.
 export const PRESETS = {
-  low: { res: 'auto', sky: 0.45, shadows: 1024, clouds: false, bushes: false, bloom: true, msaa: 0 },
-  medium: { res: 'auto', sky: 0.5, shadows: 2048, clouds: true, bushes: true, bloom: true, msaa: 4 },
-  high: { res: 'auto', sky: 0.6, shadows: 2048, clouds: true, bushes: true, bloom: true, msaa: 4 },
-  ultra: { res: 1, sky: 0.8, shadows: 4096, clouds: true, bushes: true, bloom: true, msaa: 4 },
+  low: { res: 'auto', sky: 0.45, shadows: 1024, clouds: false, bushes: false, bloom: true, msaa: 0, fx: 'low' },
+  medium: { res: 'auto', sky: 0.5, shadows: 2048, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
+  high: { res: 'auto', sky: 0.6, shadows: 2048, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
+  ultra: { res: 1, sky: 0.8, shadows: 4096, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
 };
 const DEFAULT = { preset: 'high', ...PRESETS.high, fps: false };
 
@@ -38,6 +38,7 @@ const ROWS = [
   ['msaa', 'Anti-aliasing', [[0, 'Off'], [4, 'On']]],
   ['clouds', 'Volumetric clouds', [[false, 'Off'], [true, 'On']], 'Real 3D cumulus you can fly through'],
   ['bushes', '3D vegetation', [[false, 'Off'], [true, 'On']], 'Bushes near the camera'],
+  ['fx', 'Effects', [['low', 'Low'], ['high', 'High']], 'Sparks, embers and glints: how many particles'],
   ['bloom', 'Bloom', [[false, 'Off'], [true, 'On']], 'Glow round the sun, flames and lights'],
   ['fps', 'Frame rate', [[false, 'Hide'], [true, 'Show']]],
 ];

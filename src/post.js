@@ -11,7 +11,8 @@ const VERT = 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(posit
 
 const DOWN = /* glsl */`
   uniform sampler2D tSrc; uniform vec2 uTexel; uniform float uFirst; varying vec2 vUv;
-  vec3 s(vec2 o) { return texture2D(tSrc, vUv + o * uTexel).rgb; }
+  // a NaN or infinite pixel (from any shader) would smear across the whole frame through the blur: drop it here
+  vec3 s(vec2 o) { vec3 c = texture2D(tSrc, vUv + o * uTexel).rgb; return all(equal(c, c)) ? min(c, vec3(60000.0)) : vec3(0.0); }
   // on the first level, weight each group by 1/(1+luma) so a single blazing pixel cannot flicker
   float kw(vec3 c) { return uFirst > 0.5 ? 1.0 / (1.0 + dot(c, vec3(0.2126, 0.7152, 0.0722))) : 1.0; }
   void main() {

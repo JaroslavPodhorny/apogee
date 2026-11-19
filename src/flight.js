@@ -7,7 +7,7 @@ import { partMesh, lightMats, interstageMesh, fairingHalfMesh } from './meshes.j
 import { makeSkyPlanet, makeMapPlanet, updateSky, sunTransmittance, SUN_E } from './planet.js';
 import { Terrain } from './terrain.js';
 import { cloudNoise, groundDetail } from './clouds.js';
-import { Smoke, plumeMaterial, plumeGeo } from './fx.js';
+import { Smoke, Sparks, plumeMaterial, plumeGeo, fireballGeo, fireballMaterial, plasmaGeo, plasmaCapGeo, plasmaMaterials, vaporGeo, vaporMaterial } from './fx.js';
 import { Scatter } from './scatter.js';
 import { gfx, onGfx } from './gfx.js';
 import { PhysicalBloomPass, outputPass } from './post.js';
@@ -34,24 +34,6 @@ const fmtTime = (s) => { if (!Number.isFinite(s)) return '—'; s = Math.max(0, 
 const OCC_GEO = new THREE.CylinderGeometry(0.34, 0.16, 1, 16, 1, false).translate(0, -0.5, 0);
 const OCC_MAT = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: true });
 const FLAME_COL = [new THREE.Color(1, 0.62, 0.32), new THREE.Color(1, 0.8, 0.94), new THREE.Color(0.78, 0.86, 1)];
-function glowMaterial(core, tail) {
-  return new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-    uniforms: { uSpread: { value: 1.5 }, uLen: { value: 5 }, uTime: { value: 0 }, uPower: { value: 0 }, uBright: { value: 6 }, uCore: { value: new THREE.Color(core) }, uTail: { value: new THREE.Color(tail) } },
-    vertexShader: /* glsl */`uniform float uSpread, uLen, uTime; varying float vT; varying float vF;
-      void main(){ vec3 p = position; float t = -p.y; vT = t;
-        p.xz *= mix(1.0, uSpread, pow(max(t, 0.0), 0.75)) * (1.0 + 0.02*sin(uTime*21.0 + t*7.0));
-        p.y *= uLen * (1.0 + 0.015*sin(uTime*13.0));
-        vec4 mv = modelViewMatrix * vec4(p, 1.0);
-        vec3 n = normalize(normalMatrix * vec3(position.x, 0.0, position.z));
-        vF = abs(dot(n, normalize(-mv.xyz)));
-        gl_Position = projectionMatrix * mv; }`,
-    fragmentShader: /* glsl */`uniform float uPower, uBright; uniform vec3 uCore, uTail; varying float vT; varying float vF;
-      void main(){ float t = clamp(vT, 0.0, 1.0), u = 1.0 - t; float a = pow(u, 1.8) * smoothstep(0.0, 0.07, t) * uPower * mix(0.12, 1.0, vF*vF);
-        vec3 c = mix(uTail, uCore, pow(u, 4.0)); gl_FragColor = vec4(c*uBright*(1.0 + 3.0*pow(u, 8.0)), clamp(a, 0.0, 1.0)); }`,
-  });
-}
-const glowGeo = new THREE.CylinderGeometry(1, 1, 1, 20, 12, true); glowGeo.translate(0, -0.5, 0);
 
 function dotTexture(color, ring) {
   const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
@@ -148,6 +130,12 @@ export class Flight {
     this.rcsBtn = mk('RCS', 'Small steering thrusters (R)', () => this.toggleRCS());
     this.tgtBtn = mk('Target', 'Point at the target', () => this.setSasMode('totarget'));
     this.killBtn = mk('Match', 'Point against your motion relative to the target: burn to match its speed', () => this.setSasMode('relretro'));
+    // compile the effect shaders in the background now, so the first re-entry or explosion does not stall a frame
+    if (renderer.compileAsync) {
+      const warm = new THREE.Scene(), pm = plasmaMaterials(), u = { value: new THREE.Vector3() };
+      for (const [g, m] of [[fireballGeo, fireballMaterial()], [plasmaGeo, pm.sheath], [plasmaCapGeo, pm.cap], [vaporGeo, vaporMaterial(u.value, u.value)], [new THREE.PlaneGeometry(), new Sparks(1).mat]]) warm.add(new THREE.Mesh(g, m));
+      renderer.compileAsync(warm, new THREE.PerspectiveCamera()).catch(() => {});
+    }
     this.nav = $('navball').getContext('2d');
     this.navImg = this.nav.createImageData($('navball').width, $('navball').height);
   }
@@ -193,6 +181,7 @@ export class Flight {
     scene.add(this.sunLight, this.sunLight.target);
     this.envT = 1e9; this.envRT = null; this.exposure = 1;
     this.smoke = new Smoke(); scene.add(this.smoke.mesh);
+    this.sparks = new Sparks(); scene.add(this.sparks.mesh);
     this.engineLight = new THREE.PointLight(0xffaa66, 0, 0, 2); scene.add(this.engineLight); this.smoke.flameLight = this.engineLight;   // always present: switching a light on never recompiles shaders
     this.sun = new Sun(); scene.add(this.sun.mesh, this.sun.flare);
     this.sky.material.uniforms.uSunDisc.value = 0;
@@ -361,7 +350,12 @@ export class Flight {
       if (!view) {
         view = { group: new THREE.Group(), body: new THREE.Group(), sig: -1, chutes: new Map() };
         view.group.add(view.body); this.scene.add(view.group);
-        view.glow = new THREE.Mesh(glowGeo, glowMaterial(0xffc27a, 0xff3b12)); view.glow.visible = false; view.group.add(view.glow);
+        // re-entry plasma (sheath and shock cap) and the vapour cone: built once, shown when they happen
+        const pm = plasmaMaterials(); view.plasma = pm.uniforms;
+        view.glow = new THREE.Mesh(plasmaGeo, pm.sheath); view.cap = new THREE.Mesh(plasmaCapGeo, pm.cap);
+        view.vapor = new THREE.Mesh(vaporGeo, vaporMaterial(this.smoke.mat.uniforms.uSunCol.value, this.smoke.mat.uniforms.uAmb.value));
+        for (const m of [view.glow, view.cap, view.vapor]) { m.visible = false; m.frustumCulled = false; view.group.add(m); }
+        view.glow.renderOrder = view.cap.renderOrder = 7; view.vapor.renderOrder = 4;
         this.views.set(v, view);
       }
       const sig = v.parts.length * 1000003 + (v.parts[0] ? v.parts[0].id.length : 0) + v.parts.reduce((s2, p) => s2 + (p.fairGone ? 7 : 0), 0);
@@ -473,15 +467,8 @@ export class Flight {
           const o = p.chuteOpen; c.scale.set(0.15 + 0.85 * o * o, 0.4 + 0.6 * o, 0.15 + 0.85 * o * o);
         } else if (view.chutes.has(p.id)) view.chutes.get(p.id).visible = false;
       }
-      const heat = THREE.MathUtils.clamp((v.heatFlux - 7e4) / 4e5, 0, 1);
-      view.glow.visible = heat > 0.04 && !v.landed;
-      if (view.glow.visible) {
-        const un = view.glow.material.uniforms;
-        view.glow.quaternion.setFromUnitVectors(Y_AXIS, vb);
-        view.glow.position.copy(vb).multiplyScalar(view.ext * 0.9);
-        view.glow.scale.set(view.wid * 1.25, 1, view.wid * 1.25);
-        un.uPower.value = 0.25 + heat * 0.75; un.uLen.value = view.ext * 3 + 6; un.uSpread.value = 1.5; un.uTime.value = this.time;
-      }
+      this.updateHeatFx(v, view, vb, pr, sAir);
+      if (v === world.active) this.updateRcsFx(v);
     }
     this.smoke.endTrails(this.trailKeys);
     // the flame lights everything around it: the pad, the tower, the smoke, the rocket's own skirt
@@ -503,20 +490,120 @@ export class Flight {
         if (pl.pressure(fx.pos.length() - pl.R) > 0.002) for (let i = 0; i < 10; i++) { const dv = new THREE.Vector3().randomDirection().multiplyScalar(fx.size * 1.5); this.smoke.emit(fx.pos.clone().add(dv.clone().multiplyScalar(0.3)), dv.add(fx.vel), fx.size * 0.4, fx.size * 1.6, 3 + Math.random() * 3, 0, null, 0.5); }
         sfx.play('stage'); continue;
       }
-      const m = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), new THREE.MeshBasicMaterial({ color: new THREE.Color(6, 2.4, 0.6), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+      if (fx.type === 'sep') { this.sepFx(fx); continue; }
+      const m = new THREE.Mesh(fireballGeo, fireballMaterial()); m.frustumCulled = false; m.renderOrder = 6;
+      this.explosionSparks(fx);
       if (pl.pressure(fx.pos.length() - pl.R) > 0.005) for (let i = 0; i < 26; i++) {
         const dv = new THREE.Vector3().randomDirection().multiplyScalar(fx.size * (2 + Math.random() * 6));
-        this.smoke.emit(fx.pos.clone().addScaledVector(dv, 0.15), dv.add(fx.vel), fx.size * 0.8, fx.size * (3 + Math.random() * 3), 5 + Math.random() * 6, i < 14 ? 1 : 0.2);
+        this.smoke.emit(fx.pos.clone().addScaledVector(dv, 0.15), dv.add(fx.vel), fx.size * 0.8, fx.size * (3 + Math.random() * 3), 5 + Math.random() * 6, i < 14 ? 1 : 0.2, null, 1, 0.75 + 0.25 * Math.random());
       }
       m.userData = fx; this.scene.add(m); this.fxMeshes.push(m);
     }
     this.fxMeshes = this.fxMeshes.filter((m) => {
-      const fx = m.userData, age = (world.t - fx.t) / 1.1;
-      if (age > 1 || age < 0) { this.scene.remove(m); return false; }
-      m.position.copy(fx.pos).addScaledVector(fx.vel, world.t - fx.t).sub(this.origin);
-      m.scale.setScalar(fx.size * (0.4 + 1.8 * Math.sqrt(age))); m.material.opacity = 1 - age;
+      const fx = m.userData, age = (world.t - fx.t) / 2.4;
+      if (age > 1 || age < 0) { this.scene.remove(m); m.material.dispose(); return false; }
+      // the fireball keeps the wreck's momentum at first, then the air stops it and it rises
+      const tt = world.t - fx.t, up = fx.pos.clone().normalize();
+      m.position.copy(fx.pos).addScaledVector(fx.vel, Math.min(tt, 0.25)).addScaledVector(up, fx.size * 1.5 * tt * tt * 0.2).sub(this.origin);
+      m.scale.setScalar(fx.size * (0.5 + 1.7 * Math.pow(age, 0.45)));
+      m.material.uniforms.uAge.value = age; m.material.uniforms.uTime.value = this.time;
       return true;
     });
+  }
+
+  // ---------- glowing and glinting effects (sparks) ----------
+  // Re-entry: the plasma sheath and shock cap facing the airflow, and embers torn off the heat shield.
+  // Transonic: the vapour cone round the rocket's shoulder.
+  updateHeatFx(v, view, vb, pr, sAir) {
+    const heat = THREE.MathUtils.clamp((v.heatFlux - 7e4) / 4e5, 0, 1), on = heat > 0.02 && !v.landed;
+    view.glow.visible = view.cap.visible = on;
+    if (on) {
+      const U = view.plasma, W = view.wid * 1.2;
+      view.glow.quaternion.setFromUnitVectors(Y_AXIS, vb); view.cap.quaternion.copy(view.glow.quaternion);
+      view.glow.position.copy(vb).multiplyScalar(view.ext * 0.9); view.cap.position.copy(view.glow.position);
+      view.glow.scale.set(W, 1, W); view.cap.scale.set(W, W * 0.42, W);
+      U.uHeat.value = heat; U.uLen.value = view.ext * 3 + 6; U.uWid.value = W; U.uTime.value = this.time; U.uSpread.value = 1.5;
+      // ablation embers flaking off the shield's rim and streaming back in the flow
+      const S = this.sparks, n = S.count(heat * heat * 260 * this.simDt);
+      if (n > 0) {
+        const qv = v.q, e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), pos = new THREE.Vector3(), vel = new THREE.Vector3();
+        e1.set(1, 0, 0).cross(vb); if (e1.lengthSq() < 0.01) e1.set(0, 0, 1).cross(vb); e1.normalize(); e2.crossVectors(vb, e1);
+        const drag = 0.25 / Math.max(pr, 1e-9);     // in this air they fall ~400 m/s behind each second: they stream back through the glow
+        for (let i = 0; i < n; i++) {
+          const a = Math.random() * Math.PI * 2, rr = W * (0.55 + 0.4 * Math.random());
+          pos.copy(vb).multiplyScalar(view.ext * 0.8).addScaledVector(e1, Math.cos(a) * rr).addScaledVector(e2, Math.sin(a) * rr).applyQuaternion(qv).add(v.r);
+          vel.copy(e1).multiplyScalar(Math.cos(a)).addScaledVector(e2, Math.sin(a)).applyQuaternion(qv).multiplyScalar(5 + Math.random() * 25).add(v.v);
+          const T = 0.6 + 0.4 * heat;
+          S.emit(pos, vel, 0.4 + Math.random() * 0.8, Math.max(0.05, view.wid * 0.06) * (0.6 + Math.random()), [22 * T, 11 * T, 4 * T], drag, 1);
+        }
+      }
+    }
+    // vapour cone: strongest right at Mach 1, only in dense (humid, low) air
+    const k = v.landed ? 0 : Math.exp(-((((v.mach || 0) - 1.0) / 0.15) ** 2)) * THREE.MathUtils.smoothstep(pr, 0.08, 0.3);
+    view.vapor.visible = k > 0.02 && sAir > 50;
+    if (view.vapor.visible) {
+      const m = view.vapor, R = view.wid * 1.08;
+      m.quaternion.setFromUnitVectors(Y_AXIS, vb);
+      m.position.copy(vb).multiplyScalar(view.ext * 0.25);
+      m.scale.set(R, view.ext * 0.9, R);
+      m.material.uniforms.uK.value = Math.min(1, k * 1.5); m.material.uniforms.uTime.value = this.time;
+    }
+  }
+  // RCS: each thruster block puffs gas the opposite way to the force it gives (turning and translating)
+  updateRcsFx(v) {
+    if (!v.rcs || !v.hasControl || this.simDt <= 0) return;
+    const blocks = v.parts.filter((p) => p.def.rcs); if (!blocks.length) return;
+    let mono = 0; for (const p of v.parts) mono += p.mono; if (mono <= 0) return;
+    const u = v.input, cmd = v.cmd, d = new THREE.Vector3(), F = new THREE.Vector3(), tq = new THREE.Vector3(), pos = new THREE.Vector3(), vel = new THREE.Vector3(), j = new THREE.Vector3();
+    const S = this.sparks, pr = this.world.planet.pressure(v.alt);
+    for (const p of blocks) {
+      d.copy(p.pos).sub(v.com);
+      const L2 = Math.max(d.lengthSq(), 0.25);
+      F.crossVectors(tq.copy(cmd), d).divideScalar(Math.sqrt(L2)).add(j.set(u.tx, u.ty, u.tz));   // torque = d × F
+      const f = F.length(); if (f < 0.12) continue;
+      const n = S.count(Math.min(1, f) * 160 * this.simDt);
+      F.normalize().negate().applyQuaternion(v.q);           // the gas leaves the other way
+      for (let i = 0; i < n; i++) {
+        pos.copy(d).applyQuaternion(v.q).add(v.r).addScaledVector(F, 0.15);
+        vel.copy(F).multiplyScalar(25 + Math.random() * 15).add(j.randomDirection().multiplyScalar(4)).add(v.v);
+        const b = 1.2 + 1.8 * (1 - Math.min(1, pr * 4));        // brighter against black space, faint in air
+        S.emit(pos, vel, 0.18 + Math.random() * 0.2, 0.07, [b, b * 1.03, b * 1.1], 4, 0, 14);
+      }
+    }
+  }
+  // Decouplers: the pyro bolts flash and spit sparks; in air a small puff, in vacuum a spray of ice crystals
+  // (propellant venting and frost shaken off the tanks) glinting in the sun as the stages drift apart.
+  sepFx(fx) {
+    const S = this.sparks, pl = this.world.planet, pr = pl.pressure(fx.pos.length() - pl.R), pos = new THREE.Vector3(), vel = new THREE.Vector3(), j = new THREE.Vector3();
+    S.emit(fx.pos, fx.vel, 0.09, Math.max(0.4, fx.size), [26, 20, 14], 0, 0);
+    for (let i = 0, n = S.count(18); i < n; i++) {
+      j.randomDirection(); pos.copy(fx.pos).addScaledVector(j, fx.size);
+      vel.copy(j).multiplyScalar(6 + Math.random() * 14).add(fx.vel);
+      S.emit(pos, vel, 0.3 + Math.random() * 0.6, 0.03, [24, 14, 5], 1.5, 1);
+    }
+    if (pr > 0.01) {
+      for (let i = 0; i < 6; i++) { const dv = j.randomDirection().clone().multiplyScalar(fx.size * 2); this.smoke.emit(fx.pos.clone().addScaledVector(dv, 0.4), dv.add(fx.vel), fx.size * 0.6, fx.size * 2.4, 2 + Math.random() * 2, 0.3, null, 0.45); }
+    } else {
+      const sunlit = this.sunDir.dot(fx.pos.clone().normalize()) > -0.15 ? 1 : 0.08;
+      for (let i = 0, n = S.count(110); i < n; i++) {
+        j.randomDirection(); pos.copy(fx.pos).addScaledVector(j, fx.size * Math.random());
+        vel.copy(j).multiplyScalar(0.4 + Math.random() * 2.6).addScaledVector(fx.dir, (Math.random() - 0.5) * 3).add(fx.vel);
+        const g = (1.5 + Math.random() * 3) * sunlit;
+        S.emit(pos, vel, 3 + Math.random() * 5, 0.04 + Math.random() * 0.05, [g * 1.5, g * 1.65, g * 1.9], 0, -1);
+      }
+    }
+  }
+  // A crashing stage: a flash, then burning fragments flung out in all directions, arcing down
+  explosionSparks(fx) {
+    const S = this.sparks, pos = new THREE.Vector3(), vel = new THREE.Vector3(), j = new THREE.Vector3(), sz = fx.size;
+    S.emit(fx.pos, fx.vel, 0.16, sz * 2.5, [40, 30, 20], 0, 0);
+    for (let i = 0, n = S.count(90); i < n; i++) {
+      j.randomDirection(); pos.copy(fx.pos).addScaledVector(j, sz * 0.4 * Math.random());
+      const sp = (10 + Math.random() * 45) * Math.sqrt(sz);
+      vel.copy(j).multiplyScalar(sp).add(fx.vel);
+      const big = Math.random() < 0.2;
+      S.emit(pos, vel, (big ? 1.5 : 0.6) + Math.random() * 1.6, (big ? 0.12 : 0.05) * Math.sqrt(sz), [9, 5.2, 2.2], 0.35, 1);
+    }
   }
 
   onBlast(fx) {
@@ -930,6 +1017,9 @@ export class Flight {
       // a camera filming a launch at night stops down for the flame, so its colours do not burn out to white
       const flameK = this.engineLight && this.engineLight.intensity > 0 ? THREE.MathUtils.clamp(1 - this.cam.dist / 500, 0, 1) : 0;
       target = THREE.MathUtils.lerp(target, Math.min(target, 1.35), flameK);
+      // and for the glow of re-entry: the plasma is the brightest thing in the night sky
+      const plasmaK = a && !a.landed ? THREE.MathUtils.clamp((a.heatFlux - 7e4) / 4e5, 0, 1) : 0;
+      target = THREE.MathUtils.lerp(target, Math.min(target, 1.1), Math.min(1, plasmaK * 3));
       this.exposure += (target - this.exposure) * (1 - Math.exp(-dt * 2.5));
       // stars: exposed for a sunlit rocket only the brightest show; with the eye opened up at night, all of them
       this.sky.material.uniforms.uStarK.value = THREE.MathUtils.lerp(0.3, 1.6, THREE.MathUtils.smoothstep(this.exposure, 1.1, 2.8));
@@ -945,6 +1035,8 @@ export class Flight {
         this.sun.update(cam, cp, this.sunDir, pl.R, this.sunCol, occ, THREE.MathUtils.clamp(1 - camAlt / pl.atmTop, 0, 1), this.terVis ?? 1);
       }
       this.smoke.update(this.paused ? 0 : this.simDt, pl, this.origin, cam, up, sPos.dot(up));
+      this.sparks.viewH = this.ph; this.sparks.budget = gfx.fx === 'low' ? 0.4 : 1;
+      this.sparks.update(this.paused ? 0 : this.simDt, pl, this.origin, cam, a ? a.v : new THREE.Vector3(), 1 / 50);
       {
         const tr = this.terrain, th2 = theta;
         const sc = new THREE.Vector3(this.sunCol.r, this.sunCol.g, this.sunCol.b).multiplyScalar(SUN_E), am = sm.uAmb.value.clone();

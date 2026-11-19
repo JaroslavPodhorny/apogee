@@ -9,6 +9,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+class Server(http.server.ThreadingHTTPServer):
+    request_queue_size = 128   # the page asks for ~25 modules at once; the default backlog of 5 drops some
+    daemon_threads = True
+
 port = int(sys.argv[1]) if len(sys.argv) > 1 else 5173
 print(f'Apogee running at http://localhost:{port}')
-http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
+Server(('127.0.0.1', port), Handler).serve_forever()

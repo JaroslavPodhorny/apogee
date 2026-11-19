@@ -1124,6 +1124,8 @@ export class World {
       if (dec.parent === nbId) dec.parent = null; else if (nb.parent === id) nb.parent = null; else continue;
       const dir = dec.def.decoupler === 'radial' ? dec.ax.clone() : dec.pos.clone().sub(nb.pos).normalize();
       impulses.push({ id, dir, J: dec.def.eject || 1000 });
+      // for the effects: where the bolts fire and which way the pieces fly apart
+      this.fx.push({ type: 'sep', pos: dec.pos.clone().sub(v.com).applyQuaternion(v.q).add(v.r), dir: dir.clone().applyQuaternion(v.q), vel: v.v.clone(), size: Math.max(dec.def.r, 0.3), t: this.t });
     }
     v.pending = [];
     this.split(v, impulses);
