@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apogee · Material board</title>
+<!-- Art-direction tool, not part of the game. Edit src/style.js (palette, recipes), refresh, compare. -->
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+<style>
+  body { overflow: auto; background: #101113; color: var(--ink); }
+  #board { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+  #side { padding: 22px; border-right: 1px solid var(--rule); overflow-y: auto; max-height: 100vh; position: sticky; top: 0; }
+  #side h1 { font: 500 30px/1 var(--num); margin: 0 0 4px; letter-spacing: 0.04em; }
+  #side p { color: var(--ink-3); font-size: 12px; margin: 0 0 18px; line-height: 1.45; }
+  .sw { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: center; margin: 0 0 6px; font-size: 12.5px; }
+  .sw i { width: 34px; height: 22px; border-radius: 2px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12); }
+  .sw small { display: block; color: var(--ink-3); font-size: 11px; }
+  #main { position: relative; }
+  #view { position: relative; height: 78vh; }
+  #view canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+  .lbl { position: absolute; transform: translate(-50%, 0); font: 500 12px/1.2 var(--num); color: var(--ink-2); white-space: nowrap; pointer-events: none; text-shadow: var(--shadow); }
+  .lbl.h { font-size: 15px; color: var(--ink); letter-spacing: 0.06em; text-transform: uppercase; transform: none; }
+  #controls { position: absolute; top: 14px; right: 18px; display: flex; gap: 8px; }
+  #controls button { padding: 6px 12px; font-size: 12.5px; color: var(--ink-2); border: 1px solid var(--rule); border-radius: 2px; }
+  #controls button.on { background: var(--ink); color: #111214; }
+  #maps { padding: 22px; }
+  #maps h2 { font: 500 22px/1 var(--num); margin: 0 0 14px; }
+  .rec { display: grid; grid-template-columns: 120px repeat(3, 192px); gap: 12px; align-items: center; margin-bottom: 12px; font-size: 13px; }
+  .rec canvas { width: 192px; height: 192px; image-rendering: auto; border: 1px solid var(--rule); }
+  .rec small { display: block; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<div id="board">
+  <aside id="side"><h1>APOGEE</h1><p>Material board. The palette and every surface, from <b>src/style.js</b>. Change a colour or a recipe there, refresh this page, then check it in the game.</p><div id="pal"></div></aside>
+  <div id="main">
+    <div id="view"><div id="labels"></div><div id="controls"><button data-l="day" class="on">Daylight</button><button data-l="low">Low sun</button><button data-l="studio">Studio</button><button id="spin">Turn</button></div></div>
+    <div id="maps"><h2>Surface recipes · colour · normal · roughness (one tile each)</h2><div id="recs"></div></div>
+  </div>
+</div>
+<script type="module">
+import * as THREE from './vendor/three.module.js';
+import { PALETTE, RECIPE_NAMES, recipe, prepareWorldSurface } from './src/style.js';
+import { MAT, materialNames, partMesh, studioEnvironment } from './src/meshes.js';
+import { siteMaterials } from './src/site.js';
+import { PARTS } from './src/parts.js';
+
+// palette swatches, with the role written next to each colour in style.js
+const src = await (await fetch('src/style.js')).text();
+const pal = document.getElementById('pal');
+for (const [k, v] of Object.entries(PALETTE)) {
+  const note = (src.match(new RegExp(`\\b${k}: '[^']+',\\s*//\\s*(.*)`)) || [])[1] || '';
+  pal.insertAdjacentHTML('beforeend', `<div class="sw"><i style="background:${v}"></i><div>${k} <small>${v}${note ? ` · ${note}` : ''}</small></div></div>`);
+}
+
+// the 3D board
+const view = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+view.prepend(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x16181b);
+const cam = new THREE.PerspectiveCamera(32, 1, 0.1, 400);
+const env = studioEnvironment(renderer);
+const sun = new THREE.DirectionalLight(0xffffff, 3); sun.castShadow = true; sun.shadow.mapSize.set(4096, 4096);
+Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 200 }); sun.shadow.bias = -0.0003; sun.shadow.normalBias = 0.03;
+const hemi = new THREE.HemisphereLight(0xbcd2ff, 0x5a5040, 0.6);
+scene.add(sun, sun.target, hemi);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x2a2b2d, roughness: 0.95 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+
+const labels = [];
+const label = (text, pos, head) => { const el = document.createElement('div'); el.className = `lbl${head ? ' h' : ''}`; el.textContent = text; document.getElementById('labels').appendChild(el); labels.push({ el, pos }); };
+const spinners = [];
+const sw = 2.6;
+function row(title, z, items) {
+  label(title, new THREE.Vector3(-((items.length - 1) * sw) / 2 - 1.6, 3.3, z), true);
+  items.forEach(([name, obj], i) => {
+    const x = (i - (items.length - 1) / 2) * sw;
+    obj.position.x += x; obj.position.z += z;
+    obj.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(obj); spinners.push(obj);
+    label(name, new THREE.Vector3(x, -0.05, z + 1.25));
+  });
+}
+// flight materials on a 1.6 m drum (one paint panel round a quarter of it), as on a tank
+const TILE = 1.6;
+const drum = (m) => {
+  const g = new THREE.CylinderGeometry(0.8, 0.8, 2, 48, 1);
+  const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (Math.PI * 2 * 0.8) / TILE, uv.getY(i) * 2 / TILE);
+  const mm = m.clone(); for (const k of ['map', 'normalMap', 'roughnessMap']) if (mm[k]) { mm[k] = mm[k].clone(); mm[k].repeat.set(1, 1); mm[k].needsUpdate = true; }
+  const mesh = new THREE.Mesh(g, mm); mesh.position.y = 1; return mesh;
+};
+// site materials on a block with world UVs, like the props
+const block = (m) => { const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.8, 2.2, 1.8).translate(0, 1.1, 0), m); prepareWorldSurface(mesh); return mesh; };
+
+const skip = new Set(['nozzle', 'nozzleRad']);
+const flight = materialNames().filter((k) => !skip.has(k)).map((k) => [k, drum(MAT[k])]);
+const SM = siteMaterials();
+const site = Object.entries(SM).filter(([, m]) => m.isMeshStandardMaterial).map(([k, m]) => [k, block(m)]);
+const half = Math.ceil(flight.length / 2);
+row('Flight hardware', -7.5, flight.slice(0, half));
+row('', -3.5, flight.slice(half));
+row('Ground equipment', 1, site.slice(0, Math.ceil(site.length / 2)));
+row('', 5, site.slice(Math.ceil(site.length / 2)));
+const partIds = ['pod1', 'probe2', 'tank_S_6', 'e_ember', 'e_halo', 'dec_S', 'shield_S', 'fin_m', 'srb_hammer', 'rcs', 'mono_S', 'chute_S'].filter((id) => PARTS[id]);
+row('Parts', 10, partIds.map((id) => { const m = partMesh(PARTS[id]); const b = new THREE.Box3().setFromObject(m), s = 2 / Math.max(0.5, b.getSize(new THREE.Vector3()).length() * 0.7); const g = new THREE.Group(); m.scale.setScalar(s); m.position.y = -b.min.y * s; g.add(m); return [PARTS[id].name, g]; }));
+
+// lighting presets: noon, a low golden sun, and the hangar's studio light
+function light(l) {
+  for (const b of document.querySelectorAll('#controls [data-l]')) b.classList.toggle('on', b.dataset.l === l);
+  scene.environment = env;
+  if (l === 'day') { sun.position.set(30, 60, 25); sun.color.setRGB(1, 0.97, 0.92); sun.intensity = 3.2; scene.environmentIntensity = 0.45; hemi.intensity = 0.5; renderer.toneMappingExposure = 1.0; }
+  if (l === 'low') { sun.position.set(60, 12, 30); sun.color.setRGB(1, 0.72, 0.45); sun.intensity = 3.4; scene.environmentIntensity = 0.25; hemi.intensity = 0.3; renderer.toneMappingExposure = 1.15; }
+  if (l === 'studio') { sun.position.set(30, 60, 40); sun.color.setRGB(1, 1, 1); sun.intensity = 2.3; scene.environmentIntensity = 0.7; hemi.intensity = 0.5; renderer.toneMappingExposure = 1.05; }
+}
+for (const b of document.querySelectorAll('#controls [data-l]')) b.onclick = () => light(b.dataset.l);
+light('day');
+let spin = false; document.getElementById('spin').onclick = (e) => { spin = !spin; e.target.classList.toggle('on', spin); };
+
+// orbit: drag to turn, wheel to zoom
+const orb = { az: 0.35, el: 0.42, d: 34, tgt: new THREE.Vector3(0, 1, 1.5) };
+let drag = null;
+window.board = { orb, light, scene };      // for scripted close-ups: board.orb.tgt.set(x, y, z); board.orb.d = 6
+renderer.domElement.onpointerdown = (e) => { drag = [e.clientX, e.clientY]; };
+addEventListener('pointerup', () => { drag = null; });
+addEventListener('pointermove', (e) => { if (!drag) return; orb.az -= (e.clientX - drag[0]) * 0.005; orb.el = Math.min(1.4, Math.max(0.05, orb.el + (e.clientY - drag[1]) * 0.005)); drag = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('wheel', (e) => { e.preventDefault(); orb.d = Math.min(90, Math.max(4, orb.d * Math.exp(e.deltaY * 0.001))); }, { passive: false });
+
+function frame(t) {
+  const w = view.clientWidth, h = view.clientHeight;
+  renderer.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix();
+  cam.position.set(orb.tgt.x + orb.d * Math.cos(orb.el) * Math.sin(orb.az), orb.tgt.y + orb.d * Math.sin(orb.el), orb.tgt.z + orb.d * Math.cos(orb.el) * Math.cos(orb.az));
+  cam.lookAt(orb.tgt);
+  if (spin) for (const o of spinners) o.rotation.y = t * 0.0004;
+  renderer.render(scene, cam);
+  for (const { el, pos } of labels) { const p = pos.clone().project(cam); el.style.display = p.z < 1 ? '' : 'none'; el.style.left = `${(p.x * 0.5 + 0.5) * w}px`; el.style.top = `${(-p.y * 0.5 + 0.5) * h}px`; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// the raw maps of every recipe
+const recs = document.getElementById('recs');
+const toCanvas = (t, alpha) => {
+  const { data, width, height } = t.image, c = document.createElement('canvas'); c.width = width; c.height = height;
+  const id = new ImageData(new Uint8ClampedArray(data.buffer.slice(0)), width, height); c.getContext('2d').putImageData(id, 0, 0); return c;
+};
+for (const name of RECIPE_NAMES()) {
+  const r = recipe(name), d = document.createElement('div'); d.className = 'rec';
+  d.innerHTML = `<div>${name}<small>${r.map.image.width} px</small></div>`;
+  for (const k of ['map', 'normalMap', 'roughnessMap']) d.appendChild(toCanvas(r[k]));
+  recs.appendChild(d);
+}
+</script>
+</body>
+</html>

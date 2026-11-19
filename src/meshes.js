@@ -1,6 +1,8 @@
 // Procedural 3D models for every part. Local frame: +Y along the part axis, centred; +X outward for radial parts.
 //
-// House style — one set of materials used with intent, so any rocket looks like it came from one shop:
+// House style — one set of materials used with intent, so any rocket looks like it came from one shop.
+// Colours and the paint, composite and ablator surfaces come from style.js (the palette and surface recipes,
+// shared with the launch site); the specialised maps (foil, tiles, cells, ribs) are drawn here.
 //   paint     warm white painted aluminium, panel seams and rivets       (tanks, cones, fins, boosters)
 //   carbon    charcoal composite                                          (interstages, rings, mounts, decouplers)
 //   alu/steel bare metal                                                  (struts, plumbing, actuators, pumps)
@@ -12,6 +14,7 @@ import * as THREE from '../vendor/three.module.js';
 import { mergeGeometries } from '../vendor/jsm/utils/BufferGeometryUtils.js';
 import { RoomEnvironment } from '../vendor/jsm/environments/RoomEnvironment.js';
 import { PART_LIST } from './parts.js';
+import { col, recipe } from './style.js';
 
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 const TAU = Math.PI * 2;
@@ -54,16 +57,6 @@ let T = null;
 function textures() {
   if (T) return T;
   T = {};
-  // painted skin: one panel per tile (1.6 m), a mid-height seam, rivet rows along the seams
-  T.panelN = normalTex(256, 3.2, (g, n) => {
-    g.fillStyle = '#5a5a5a';
-    g.fillRect(0, 0, 2, n); g.fillRect(0, 0, n, 2); g.fillRect(0, n / 2, n, 1);
-    g.fillStyle = '#a8a8a8';
-    for (let i = 4; i < n; i += 9) { g.fillRect(5, i, 2, 2); g.fillRect(i, 6, 2, 2); }
-  });
-  T.paint = colorTex(256, (g, n) => { g.fillStyle = '#f2f2f2'; g.fillRect(0, 0, n, n); blot(g, n, 70, 40, 0.05, 255, 190, 7); });
-  T.rough = colorTex(256, (g, n) => { g.fillStyle = '#808080'; g.fillRect(0, 0, n, n); blot(g, n, 40, 60, 0.25, 230, 60, 11); }, false);
-  T.weaveN = normalTex(64, 1.2, (g, n) => { for (let y = 0; y < n; y += 4) for (let x = 0; x < n; x += 4) { g.fillStyle = ((x + y) / 4) % 2 ? '#9a9a9a' : '#6a6a6a'; g.fillRect(x, y, 4, 4); } });
   T.tubeN = normalTex(64, 2.4, (g, n) => { for (let x = 0; x < n; x++) { const v = Math.round(128 + 110 * Math.sin(((x % 4) / 4) * Math.PI)); g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(x, 0, 1, n); } });
   T.ribN = normalTex(128, 2.5, (g, n) => { for (let x = 0; x < n; x += 32) { g.fillStyle = '#c8c8c8'; g.fillRect(x + 1, 0, 5, n); g.fillStyle = '#a4a4a4'; g.fillRect(x, 0, 1, n); g.fillRect(x + 6, 0, 1, n); } g.fillStyle = '#606060'; g.fillRect(0, 0, n, 2); });
   T.foilN = normalTex(256, 4, (g, n) => {
@@ -76,16 +69,6 @@ function textures() {
     g.fillStyle = '#4a4a4a'; for (let x = 0; x < n; x += 64) g.fillRect(x, 0, 1, n);
   });
   T.foilR = colorTex(128, (g, n) => { g.fillStyle = '#5a5a5a'; g.fillRect(0, 0, n, n); blot(g, n, 14, 80, 0.5, 200, 40, 5); }, false);
-  T.hexN = normalTex(128, 2.2, (g, n) => {
-    g.strokeStyle = '#5c5c5c'; g.lineWidth = 1.5; const s = 8, h = s * Math.sqrt(3);
-    for (let row = -1; row < n / h + 1; row++) for (let col = -1; col < n / (s * 3) + 1; col++) {
-      const cx = col * s * 3 + (row % 2) * s * 1.5, cy = row * h / 2;
-      g.beginPath(); for (let k = 0; k <= 6; k++) { const a = (k / 6) * TAU; g.lineTo(cx + Math.cos(a) * s, cy + Math.sin(a) * s); } g.stroke();
-    }
-  });
-  T.ablative = colorTex(128, (g, n) => { g.fillStyle = '#8a7058'; g.fillRect(0, 0, n, n); blot(g, n, 10, 120, 0.35, 70, 30, 9); });
-  T.tileN = normalTex(128, 2.6, (g, n) => { g.fillStyle = '#585858'; for (let i = 0; i < n; i += 16) { g.fillRect(i, 0, 1, n); g.fillRect(0, i, n, 1); } });
-  T.tileC = colorTex(128, (g, n) => { for (let y = 0; y < n; y += 16) for (let x = 0; x < n; x += 16) { const v = 22 + ((x * 7 + y * 13) % 9); g.fillStyle = `rgb(${v},${v},${v + 2})`; g.fillRect(x, y, 16, 16); } });
   T.cells = colorTex(256, (g, n) => {
     g.fillStyle = '#b8bcc2'; g.fillRect(0, 0, n, n);
     const c = n / 8;
@@ -96,32 +79,42 @@ function textures() {
       g.fillStyle = 'rgba(160,170,190,0.35)'; for (let k = 1; k < 4; k++) g.fillRect(x * c + 1.5, y * c + (c * k) / 4, c - 3, 0.6);
     }
   });
+  // the shared surfaces (style.js)
+  const fp = recipe('flightPaint'), cb = recipe('carbon'), ab = recipe('ablator');
+  T.paint = fp.map; T.rough = fp.roughnessMap; T.panelN = fp.normalMap;
+  T.carbonC = cb.map; T.carbonR = cb.roughnessMap; T.weaveN = cb.normalMap;
+  T.ablative = ab.map; T.ablativeR = ab.roughnessMap; T.hexN = ab.normalMap;
+  T.tiles = recipe('heatTiles');
+  // polished stainless keeps its own soft, uneven sheen (the original, and still the favourite)
+  T.steelRough = colorTex(256, (g, n) => { g.fillStyle = '#808080'; g.fillRect(0, 0, n, n); blot(g, n, 40, 60, 0.25, 230, 60, 11); }, false);
   return T;
 }
 
 // ---------- materials ----------
 const std = (o) => new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0, ...o });
+const gloss = (o) => new THREE.MeshPhysicalMaterial({ roughness: 1, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.06, ...o });
 let MB = null;
 function base() {
   if (MB) return MB;
   const t = textures();
   MB = {
-    paint: std({ color: 0xe8e5de, roughness: 0.55, map: t.paint, normalMap: t.panelN, normalScale: new THREE.Vector2(0.9, 0.9), roughnessMap: t.rough }),
-    ribbed: std({ color: 0xe2dfd8, roughness: 0.6, map: t.paint, normalMap: t.ribN, normalScale: new THREE.Vector2(0.9, 0.9) }),
-    carbon: std({ color: 0x2c2e33, roughness: 0.55, metalness: 0.15, normalMap: t.weaveN, normalScale: new THREE.Vector2(0.35, 0.35) }),
-    black: std({ color: 0x141518, roughness: 0.82 }),
-    alu: std({ color: 0xc4c6ca, metalness: 0.92, roughness: 0.3 }),
-    steel: std({ color: 0x8b9097, metalness: 0.88, roughness: 0.4 }),
-    dark: std({ color: 0x55595f, metalness: 0.8, roughness: 0.45 }),
-    stainless: std({ color: 0xd0d2d5, metalness: 0.95, roughness: 0.26, roughnessMap: t.rough }),
-    gold: std({ color: 0xdcab52, metalness: 1, roughness: 0.3, normalMap: t.foilN, normalScale: new THREE.Vector2(0.9, 0.9), roughnessMap: t.foilR }),
-    silver: std({ color: 0xb9bcc2, metalness: 1, roughness: 0.38, normalMap: t.foilN, normalScale: new THREE.Vector2(0.9, 0.9), roughnessMap: t.foilR }),
-    bronze: std({ color: 0xa4703f, metalness: 0.9, roughness: 0.35 }),
+    // gloss white under a clear coat: the sharp reflection on top, the paint's own soft sheen below
+    paint: gloss({ color: col('enamel'), map: t.paint, normalMap: t.panelN, roughnessMap: t.rough }),
+    ribbed: gloss({ color: col('enamelShade'), map: t.paint, normalMap: t.ribN, normalScale: new THREE.Vector2(0.9, 0.9), roughnessMap: t.rough }),
+    carbon: std({ color: col('carbon'), roughness: 1, metalness: 0.15, map: t.carbonC, normalMap: t.weaveN, normalScale: new THREE.Vector2(0.6, 0.6), roughnessMap: t.carbonR }),
+    black: std({ color: col('black'), roughness: 0.82 }),
+    alu: std({ color: col('aluminium'), metalness: 0.92, roughness: 0.3 }),
+    steel: std({ color: col('steel'), metalness: 0.88, roughness: 0.4 }),
+    dark: std({ color: col('darkMetal'), metalness: 0.8, roughness: 0.45 }),
+    stainless: std({ color: col('stainless'), metalness: 0.95, roughness: 0.26, roughnessMap: t.steelRough }),
+    gold: std({ color: col('foilGold'), metalness: 1, roughness: 0.3, normalMap: t.foilN, normalScale: new THREE.Vector2(0.9, 0.9), roughnessMap: t.foilR }),
+    silver: std({ color: col('foilSilver'), metalness: 1, roughness: 0.38, normalMap: t.foilN, normalScale: new THREE.Vector2(0.9, 0.9), roughnessMap: t.foilR }),
+    bronze: std({ color: col('bronze'), metalness: 0.9, roughness: 0.35 }),
     nozzle: std({ vertexColors: true, metalness: 0.85, roughness: 0.38, normalMap: t.tubeN, normalScale: new THREE.Vector2(0.8, 0.8), side: THREE.DoubleSide }),
     nozzleRad: std({ vertexColors: true, metalness: 0.75, roughness: 0.45, side: THREE.DoubleSide }),
     phenolic: std({ color: 0x2a2320, roughness: 0.75, side: THREE.DoubleSide }),
-    ablative: std({ color: 0xffffff, map: t.ablative, roughness: 0.92, normalMap: t.hexN, normalScale: new THREE.Vector2(0.8, 0.8) }),
-    tiles: std({ color: 0xffffff, map: t.tileC, roughness: 0.75, normalMap: t.tileN, normalScale: new THREE.Vector2(0.7, 0.7) }),
+    ablative: std({ color: col('ablator'), map: t.ablative, roughness: 1, roughnessMap: t.ablativeR, normalMap: t.hexN }),
+    tiles: std({ color: col('tile'), map: t.tiles.map, roughness: 1, roughnessMap: t.tiles.roughnessMap, normalMap: t.tiles.normalMap }),
     glass: std({ color: 0x070b12, metalness: 0.9, roughness: 0.06 }),
     cells: std({ color: 0xffffff, map: t.cells, metalness: 0.55, roughness: 0.25 }),
     dish: std({ color: 0xeeece6, roughness: 0.5, side: THREE.DoubleSide }),
@@ -129,6 +122,7 @@ function base() {
   return MB;
 }
 export const MAT = new Proxy({}, { get: (_, k) => base()[k] });
+export const materialNames = () => Object.keys(base());
 // a material whose textures repeat u × v times over the surface
 const repCache = new Map();
 function rep(name, u, v) {
@@ -376,8 +370,8 @@ function build(def) {
     }
     case 'capsule': {
       const B2 = B, bh = len * 0.07, tunnel = len * 0.14, top = L - tunnel;
-      add(cyl(rTop, r, top - (-L + bh), rep('tiles', (TAU * r) / 0.9, len / 0.9), (top + (-L + bh)) / 2));
-      add(cyl(r * 1.005, r * 1.01, bh, rep('ablative', (TAU * r) / 1.2, 0.3), -L + bh / 2));
+      add(cyl(rTop, r, top - (-L + bh), rep('tiles', (TAU * r) / 4, len / 4), (top + (-L + bh)) / 2));
+      add(cyl(r * 1.005, r * 1.01, bh, rep('ablative', (TAU * r) / 0.5, 0.3), -L + bh / 2));
       add(cyl(rTop * 0.98, rTop, 0.04, B2.carbon, top - 0.02));
       add(cyl(rTop * 0.58, rTop * 0.62, tunnel, B2.alu, top + tunnel / 2));
       add(torus(rTop * 0.6, rTop * 0.04, B2.dark, L - 0.02));
@@ -472,7 +466,7 @@ function build(def) {
       const th = Math.max(0.04, f.span * 0.035), bev = th * 0.35;
       const mk = (d, z, m) => { const geo = new THREE.ExtrudeGeometry(sh, { depth: d, bevelEnabled: true, bevelThickness: bev * 0.6, bevelSize: bev, bevelSegments: 2 }); geo.translate(0, 0, z); return add(mesh(geo, m)); };
       const skinM = f.control ? B.carbon : rep('paint', 1 / TILE, 1 / TILE);
-      if (def.id === 'wing') { mk(th / 2, 0, rep('paint', 1 / TILE, 1 / TILE)); mk(th / 2, -th / 2, rep('tiles', 1 / 0.9, 1 / 0.9)); }
+      if (def.id === 'wing') { mk(th / 2, 0, rep('paint', 1 / TILE, 1 / TILE)); mk(th / 2, -th / 2, rep('tiles', 1 / 4, 1 / 4)); }
       else mk(th, -th / 2, skinM);
       const le = new THREE.Vector3(f.span, -f.sweep, 0), lel = le.length();
       const strip = box(th * 0.9, lel, th * 1.9, f.control ? B.alu : B.carbon);
@@ -542,7 +536,7 @@ function build(def) {
       const pts = [[0, -L]];
       for (let i = 1; i <= 10; i++) { const t = i / 10; pts.push([r * t, -L + len * 0.7 * t * t]); }
       pts.push([r, L - len * 0.1], [r * 0.96, L]);
-      add(lathe(pts, rep('ablative', (TAU * r) / 1.2, 1)));
+      add(lathe(pts, rep('ablative', (TAU * r) / 0.5, r / 0.45)));
       add(cyl(r * 0.96, r * 0.96, 0.02, B.carbon, L - 0.01));
       add(ring(r, len * 0.16, B.carbon, L - len * 0.08, 1.004));
       break;
@@ -819,7 +813,7 @@ function build(def) {
       const nr = r * 0.12, pts = [[r, -L], [r * 1.02, -L + len * 0.04]];
       for (let i = 1; i <= 16; i++) { const t = i / 16; pts.push([nr + (r - nr) * Math.pow(1 - t, 1.08), -L + len * 0.04 + (len * 0.94 - nr) * t]); }
       for (let i = 1; i <= 6; i++) { const a = (i / 6) * Math.PI / 2; pts.push([nr * Math.cos(a), L - len * 0.02 - nr + nr * Math.sin(a) + nr]); }
-      add(lathe(pts, def.nuke ? rep('ablative', (TAU * r) / 1.2, len / 1.2) : B.carbon));
+      add(lathe(pts, def.nuke ? rep('ablative', (TAU * r) / 0.5, len / 0.5) : B.carbon));
       add(ring(r, 0.03, B.alu, -L + len * 0.06, 1.02));
       add(cyl(r * 0.98, r * 0.98, 0.02, B.black, -L + 0.01));
       if (def.nuke) for (let i = 0; i < 2; i++) add(onSurface(box(0.01, len * 0.05, r * 0.3, B.paint), r * 0.84, i * Math.PI, -L + len * 0.18));

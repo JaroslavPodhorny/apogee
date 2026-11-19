@@ -5,9 +5,12 @@
 // One continuous ground mesh carries every surface (grass, worn grass, laterite roads, gravel, concrete,
 // scorch, contact shadows) and fades into the planet shader at its edge, where the main road carries on.
 // Frame: x = east, y = up, z = south; the rocket stands at the origin.
+// Look: every colour is a PALETTE name and every weathered surface a style.js recipe (fieldPaint, concrete,
+// cladding), mapped in world space (boxUV) so all props share one texel density and rain runs down their sides.
 import * as THREE from '../vendor/three.module.js';
 import { RoundedBoxGeometry } from '../vendor/jsm/geometries/RoundedBoxGeometry.js';
 import { mergeByMaterial } from './meshes.js';
+import { col, PALETTE, recipe, surfaceMaterial, prepareWorldSurface } from './style.js';
 
 const GROUND_R = 1100, FADE0 = 560, FADE1 = 700, LAYOUT = 1000;
 export const GRASS_LINEAR = [0.068, 0.088, 0.03];
@@ -32,17 +35,6 @@ function blots(g, n, R, count, rmin, rmax, colorFn) {
       g.fillStyle = gr; g.fillRect(x + ox - s, y + oy - s, s * 2, s * 2);
     }
   }
-}
-function normalFromHeight(c, strength) {
-  const n = c.width, m = c.height, src = c.getContext('2d').getImageData(0, 0, n, m).data, out = new Uint8Array(n * m * 4);
-  const h = (x, y) => src[(((y + m) % m) * n + ((x + n) % n)) * 4] / 255;
-  for (let y = 0; y < m; y++) for (let x = 0; x < n; x++) {
-    const dx = (h(x + 1, y) - h(x - 1, y)) * strength, dy = (h(x, y + 1) - h(x, y - 1)) * strength, l = Math.hypot(dx, dy, 1), i = (y * n + x) * 4;
-    out[i] = (-dx / l * 0.5 + 0.5) * 255; out[i + 1] = (-dy / l * 0.5 + 0.5) * 255; out[i + 2] = (1 / l * 0.5 + 0.5) * 255; out[i + 3] = 255;
-  }
-  const t = new THREE.DataTexture(out, n, m); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.generateMipmaps = true;
-  t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.anisotropy = 8; t.needsUpdate = true;
-  return t;
 }
 
 // ---------- surface textures ----------
@@ -81,33 +73,12 @@ function textures() {
   const [nc, nn] = canvas(256), N = rng(15);
   nn.fillStyle = 'rgb(128,128,128)'; nn.fillRect(0, 0, 256, 256);
   blots(nn, 256, N, 160, 8, 40, (r) => { const v = r() < 0.5 ? 40 : 220; return `rgba(${v},${v},${v},0.25)`; });
-  // props: corrugated steel, weathered paint, burlap, planks, cast concrete, hazard stripes
-  const [rc, rg] = canvas(64, 64);
-  for (let x = 0; x < 64; x++) { const v = 128 + 120 * Math.sin((x / 64) * Math.PI * 2 * 4); rg.fillStyle = `rgb(${v},${v},${v})`; rg.fillRect(x, 0, 1, 64); }
-  const [wc, w] = canvas(256), W = rng(21);
-  w.fillStyle = '#ffffff'; w.fillRect(0, 0, 256, 256);
-  blots(w, 256, W, 40, 6, 40, (r) => (r() < 0.6 ? 'rgba(150,110,80,0.25)' : 'rgba(120,120,110,0.2)'));
-  for (let i = 0; i < 50; i++) { const x = W() * 256, y0 = W() * 200; const gr = w.createLinearGradient(0, y0, 0, y0 + 60 + W() * 80); gr.addColorStop(0, 'rgba(130,85,55,0.3)'); gr.addColorStop(1, 'rgba(130,85,55,0)'); w.fillStyle = gr; w.fillRect(x, y0, 1 + W() * 2.5, 140); }
-  const [bc, b] = canvas(128), B = rng(31);
-  b.fillStyle = '#c8b68e'; b.fillRect(0, 0, 128, 128);
-  for (let y = 0; y < 128; y += 2) for (let x = 0; x < 128; x += 2) { const v = 150 + B() * 60; b.fillStyle = `rgba(${v},${v - 18},${v - 50},0.6)`; b.fillRect(x + ((y / 2) % 2), y, 1, 1); }
-  blots(b, 128, B, 20, 6, 24, () => 'rgba(90,70,40,0.25)');
-  const [pc, p] = canvas(256), PW = rng(41);
-  for (let y = 0; y < 256; y += 32) {
-    const v = 120 + PW() * 40; p.fillStyle = `rgb(${v + 20},${v - 5},${v - 40})`; p.fillRect(0, y, 256, 31); p.fillStyle = 'rgba(40,30,20,0.6)'; p.fillRect(0, y + 31, 256, 1);
-    for (let k = 0; k < 40; k++) { p.fillStyle = `rgba(70,50,30,${0.15 + PW() * 0.2})`; p.fillRect(PW() * 256, y + PW() * 31, 20 + PW() * 60, 1); }
-  }
-  const [kc, k] = canvas(256), K = rng(51);
-  k.fillStyle = '#bdb7aa'; k.fillRect(0, 0, 256, 256);
-  blots(k, 256, K, 50, 10, 50, (r) => { const v = 140 + r() * 70; return `rgba(${v},${v - 4},${v - 10},0.35)`; });
-  for (let i = 0; i < 9000; i++) { const v = 120 + K() * 100; k.fillStyle = `rgba(${v},${v},${v},0.4)`; k.fillRect(K() * 256, K() * 256, 1, 1); }
-  for (let i = 0; i < 30; i++) { const x = K() * 256, y0 = K() * 256; const gr = k.createLinearGradient(0, y0, 0, y0 + 50); gr.addColorStop(0, 'rgba(70,65,55,0.35)'); gr.addColorStop(1, 'rgba(70,65,55,0)'); k.fillStyle = gr; k.fillRect(x, y0, 2 + K() * 3, 50); }
-  k.fillStyle = 'rgba(80,76,70,0.5)'; k.fillRect(0, 0, 256, 2); k.fillRect(0, 128, 256, 1);        // form-work lines
+  // hazard stripes (every other prop surface comes from style.js)
   const [hc, hz] = canvas(128, 32);
-  hz.fillStyle = '#d9a62a'; hz.fillRect(0, 0, 128, 32); hz.fillStyle = '#1d1d1d';
+  hz.fillStyle = PALETTE.hazard; hz.fillRect(0, 0, 128, 32); hz.fillStyle = '#1d1d1d';
   for (let x = -32; x < 160; x += 32) { hz.beginPath(); hz.moveTo(x, 32); hz.lineTo(x + 16, 32); hz.lineTo(x + 32, 0); hz.lineTo(x + 16, 0); hz.fill(); }
   TEX = { grass: tex(gc, false), dirt: tex(dc, false), conc: tex(cc, false), noise: tex(nc, false),
-    corrN: normalFromHeight(rc, 6), weather: tex(wc, true), burlap: tex(bc, true), planks: tex(pc, true), concrete: tex(kc, true), hazard: tex(hc, true) };
+    hazard: tex(hc, true) };
   return TEX;
 }
 
@@ -338,36 +309,48 @@ function beamMaterial() {
   });
 }
 
+const std = (o) => new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0, ...o });
+const rep = (t, u, v) => { const c = t.clone(); c.repeat.set(u, v); c.needsUpdate = true; return c; };
+// painted ground equipment all weathers alike (fieldPaint); `metalness` stays low: it is paint, not bare metal
+const paint = (c, o = {}) => surfaceMaterial(c, 'fieldPaint', { metalness: 0.15, ...o });
+// corrugated sheet: cladding relief, painted surfaces on top of it
+const corrugated = (c, recipeName, o = {}) => { const m = surfaceMaterial(c, recipeName, o); m.normalMap = recipe('cladding').normalMap; m.normalScale = new THREE.Vector2(1.4, 1.4); return m; };
+// Every material on the site, by role (the material board, style.html, shows them all). A fresh set per call:
+// the lamps and windows in it are animated per site.
+export function siteMaterials() {
+  const T = textures();
+  return {
+    concrete: surfaceMaterial('concrete', 'concrete'),
+    steel: paint('structure', { metalness: 0.25 }),
+    galv: std({ color: col('galvanised'), roughness: 0.4, metalness: 0.85 }),
+    clad: surfaceMaterial('cladding', 'cladding', { metalness: 0.65, worldUV: 1.2 }),
+    dark: std({ color: col('graphite'), roughness: 0.5, metalness: 0.4 }),
+    mount: paint('mount', { metalness: 0.3 }),
+    tower: paint('structure', { metalness: 0.25 }),     // the service tower and its arms: graphite steel
+    white: paint('white'),
+    whiteDS: paint('white', { side: THREE.DoubleSide }),
+    grating: std({ color: col('darkMetal'), roughness: 0.55, metalness: 0.6 }),
+    rail: paint('hazard'),
+    hazard: std({ map: rep(T.hazard, 24, 1), roughness: 0.6 }),
+    rust: paint('rust', { metalness: 0.2 }),
+    burlap: surfaceMaterial('burlap', 'burlap', { worldUV: 0.8 }),
+    wood: surfaceMaterial('timber', 'timber', { worldUV: 1 }),
+    tyre: std({ color: col('rubber'), roughness: 0.9 }),
+    cable: std({ color: col('rubber'), roughness: 0.7, metalness: 0.3 }),
+    hose: std({ color: col('rubber'), roughness: 0.75 }),
+    glass: std({ color: 0x0f141a, roughness: 0.1, metalness: 0.7, emissive: new THREE.Color(0, 0, 0) }),
+    sock: std({ color: col('signal'), roughness: 0.8, side: THREE.DoubleSide }),
+    lamp: lampMaterial(new THREE.Color(1, 0.88, 0.7), 8),
+    red: lampMaterial(new THREE.Color(1, 0.1, 0.04), 0),
+    canvasGreen: std({ color: col('canvas'), roughness: 0.9, side: THREE.DoubleSide }),
+  };
+}
+
 export function buildSite(planetR, rocket) {
   const T = textures();
   const RH = rocket.height, br = rocket.baseR, radiusAt = rocket.radiusAt || (() => br);
-  const std = (o) => new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0, ...o });
-  const rep = (t, u, v) => { const c = t.clone(); c.repeat.set(u, v); c.needsUpdate = true; return c; };
-  const M = {
-    concrete: std({ map: T.concrete, roughness: 0.95 }),
-    steel: std({ color: 0x8a8d90, roughness: 0.45, metalness: 0.75 }),
-    galv: std({ color: 0xa8abad, roughness: 0.4, metalness: 0.85 }),
-    clad: std({ color: 0xb9bcbd, normalMap: rep(T.corrN, 3, 1), roughness: 0.5, metalness: 0.7, map: T.weather }),
-    dark: std({ color: 0x2c2d2e, roughness: 0.55, metalness: 0.5 }),
-    mount: std({ color: 0x3a3b3c, roughness: 0.6, metalness: 0.55, map: T.weather }),
-    orange: std({ color: 0xb4482a, roughness: 0.55, metalness: 0.35, map: T.weather }),
-    white: std({ color: 0xe9e6df, roughness: 0.55, map: T.weather }),
-    whiteDS: std({ color: 0xe9e6df, roughness: 0.6, side: THREE.DoubleSide }),
-    grating: std({ color: 0x55585b, roughness: 0.55, metalness: 0.6 }),
-    rail: std({ color: 0xd8a32a, roughness: 0.55 }),
-    hazard: std({ map: rep(T.hazard, 24, 1), roughness: 0.6 }),
-    rust: std({ color: 0x7a4a30, roughness: 0.85, metalness: 0.3, map: T.weather }),
-    burlap: std({ map: T.burlap, roughness: 1 }),
-    wood: std({ map: T.planks, roughness: 0.9 }),
-    tyre: std({ color: 0x1a1a1a, roughness: 0.9 }),
-    cable: std({ color: 0x1c1c1c, roughness: 0.7, metalness: 0.3 }),
-    hose: std({ color: 0x202020, roughness: 0.75 }),
-    glass: std({ color: 0x0f141a, roughness: 0.1, metalness: 0.7, emissive: new THREE.Color(0, 0, 0) }),
-    sock: std({ color: 0xe0612a, roughness: 0.8, side: THREE.DoubleSide }),
-    lamp: lampMaterial(new THREE.Color(1, 0.88, 0.7), 8),
-    red: lampMaterial(new THREE.Color(1, 0.1, 0.04), 0),
-    canvasGreen: std({ color: 0x3d5a3a, roughness: 0.9, side: THREE.DoubleSide }),
-  };
+  const M = siteMaterials();
+
   const box = (grp, w, h, d, m, x, y, z, ry = 0) => { const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); b.position.set(x, y, z); b.rotation.y = ry; grp.add(b); return b; };
   const props = [];
   const foot = (x, z, w, d, rot = 0) => props.push({ x, z, w, d, rot });
@@ -402,7 +385,7 @@ export function buildSite(planetR, rocket) {
   // --- service tower: orange lattice, grated decks, an elevator shaft, lightning rod and beacon ---
   const tw = 6, H = Math.max(18, Math.ceil((RH + 7) / 3) * 3), tx = -(R2 + 4 + tw / 2);
   const tower = new THREE.Group(); tower.position.set(tx, 0, 0); near.add(tower);
-  lattice(tower, { w: tw, h: H, bay: 3, leg: 0.22, br: 0.07, m: M.orange });
+  lattice(tower, { w: tw, h: H, bay: 3, leg: 0.22, br: 0.07, m: M.tower });
   for (const [cx, cz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) box(tower, 1.1, 0.5, 1.1, M.concrete, (cx * tw) / 2, 0.25, (cz * tw) / 2);
   for (let y = 6; y <= H; y += 6) {
     box(tower, tw + 1.8, 0.14, tw + 1.8, M.grating, 0, y, 0);
@@ -432,10 +415,10 @@ export function buildSite(planetR, rocket) {
     const hz = crew ? 1.8 : 1.2;
     box(g, len, 0.16, hz * 2, M.grating, len / 2, 0, 0);
     for (const sz of [-hz, hz]) {
-      g.add(strut(V(0, -0.1, sz), V(len, -0.1, sz), 0.07, M.orange, 6));
-      g.add(strut(V(0, crew ? 2.2 : 1.1, sz), V(len, crew ? 2.2 : 1.1, sz), 0.06, M.orange, 6));
+      g.add(strut(V(0, -0.1, sz), V(len, -0.1, sz), 0.07, M.tower, 6));
+      g.add(strut(V(0, crew ? 2.2 : 1.1, sz), V(len, crew ? 2.2 : 1.1, sz), 0.06, M.tower, 6));
       const n = Math.max(2, Math.round(len / 1.6));
-      for (let i = 0; i <= n; i++) { const x = (i / n) * len; g.add(strut(V(x, -0.1, sz), V(x, crew ? 2.2 : 1.1, sz), 0.04, M.orange, 5)); if (i < n) g.add(strut(V(x, -0.1, sz), V(x + len / n, crew ? 2.2 : 1.1, sz), 0.035, M.orange, 5)); }
+      for (let i = 0; i <= n; i++) { const x = (i / n) * len; g.add(strut(V(x, -0.1, sz), V(x, crew ? 2.2 : 1.1, sz), 0.04, M.tower, 5)); if (i < n) g.add(strut(V(x, -0.1, sz), V(x + len / n, crew ? 2.2 : 1.1, sz), 0.035, M.tower, 5)); }
     }
     if (crew) {
       box(g, len - 0.4, 0.08, hz * 2 + 0.3, M.white, len / 2, 2.35, 0);
@@ -561,8 +544,7 @@ export function buildSite(planetR, rocket) {
 
   // --- workshop yard: shipping containers, drums, a cable spool, the quonset shed ---
   const cGeo = new THREE.BoxGeometry(12.2, 2.6, 2.44);
-  const containerMat = (hex) => std({ color: hex, map: T.weather, normalMap: rep(T.corrN, 20, 1), normalScale: new THREE.Vector2(0.9, 0.9), roughness: 0.7, metalness: 0.35 });
-  const cm = [containerMat(0x3f6d8e), containerMat(0x9c4632), containerMat(0x6c7449), containerMat(0xd8d2c6)];
+  const cm = ['white', 'graphite', 'grey', 'white'].map((c) => corrugated(c, 'fieldPaint', { metalness: 0.15, worldUV: 1.6 }));
   const container = (x, y, z, ry, m) => {
     const c = new THREE.Mesh(cGeo, m); c.position.set(x, y + 1.3, z); c.rotation.y = ry; far.add(c);
     box(far, 0.06, 2.4, 2.3, M.dark, x + Math.cos(ry) * 6.12, y + 1.3, z - Math.sin(ry) * 6.12, ry);
@@ -571,7 +553,7 @@ export function buildSite(planetR, rocket) {
   container(-104, 0, -50, 0.3, cm[0]); container(-103, 0, -46.6, 0.3, cm[1]); container(-103.5, 2.6, -48.3, 0.3, cm[2]);
   container(-128, 0, -46, 1.6, cm[3]); container(-112, 0, -82, 0.45, cm[1]);
   const drumG = new THREE.CylinderGeometry(0.3, 0.3, 0.9, 16);
-  const drumM = [std({ color: 0x2f5a8a, roughness: 0.5, metalness: 0.4, map: T.weather }), std({ color: 0x8c2f22, roughness: 0.5, metalness: 0.4, map: T.weather }), std({ color: 0xb08a2a, roughness: 0.5, metalness: 0.4, map: T.weather })];
+  const drumM = ['graphite', 'white', 'graphite'].map((c) => paint(c, { worldUV: 1 }));
   for (let i = 0; i < 9; i++) { const d = new THREE.Mesh(drumG, drumM[i % 3]); d.position.set(-96 + (i % 3) * 0.65, 0.45, -60 + Math.floor(i / 3) * 0.65); far.add(d); }
   foot(-95.3, -59.4, 2.4, 2.4);
   for (let i = 0; i < 3; i++) box(far, 1.2, 0.14, 1.0, M.wood, -92 + i * 0.1, 0.07 + i * 0.15, -66);
@@ -579,7 +561,7 @@ export function buildSite(planetR, rocket) {
   { const sp = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 1.1, 20), M.wood); sp.rotation.x = Math.PI / 2; sp.position.set(-98, 0.9, -72); far.add(sp); foot(-98, -72, 2, 1.2); }
   { const g = new THREE.Group(); g.position.set(-140, 0, -80); g.rotation.y = 0.3; far.add(g);
     const shell = new THREE.Mesh(new THREE.CylinderGeometry(6, 6, 24, 28, 1, true, -Math.PI / 2, Math.PI),
-      std({ color: 0xb3b5b5, normalMap: rep(T.corrN, 30, 1), roughness: 0.55, metalness: 0.7, side: THREE.DoubleSide, map: T.weather }));
+      (() => { const m = surfaceMaterial('cladding', 'cladding', { metalness: 0.65, side: THREE.DoubleSide, worldUV: 0 }); for (const k of ['map', 'normalMap', 'roughnessMap']) { m[k] = rep(m[k], 30 * 1.6, 4); } return m; })());
     shell.rotation.x = -Math.PI / 2; g.add(shell);
     const back = new THREE.Mesh(new THREE.CircleGeometry(6, 28, 0, Math.PI), M.whiteDS); back.position.z = -12; g.add(back);
     const front = new THREE.Mesh(new THREE.RingGeometry(3.2, 6, 28, 1, 0, Math.PI), M.whiteDS); front.position.z = 12; g.add(front);
@@ -608,12 +590,13 @@ export function buildSite(planetR, rocket) {
   const ground = new THREE.Mesh(groundGeometry(planetR), groundMaterial(L));
   ground.receiveShadow = true; ground.renderOrder = -5;
   site.add(ground);
+  // weathered surfaces are mapped in world space: one texel density everywhere, streaks running down
   for (const grp of [near, far]) {
     const merged = mergeByMaterial(grp);
-    merged.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    merged.traverse((o) => { if (o.isMesh) { prepareWorldSurface(o); o.castShadow = true; o.receiveShadow = true; } });
     site.add(merged);
   }
-  for (const a of arms) { a.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); site.add(a); }
+  for (const a of arms) { a.updateMatrixWorld(true); a.traverse((o) => { if (o.isMesh) { prepareWorldSurface(o, o.matrixWorld); o.castShadow = true; o.receiveShadow = true; } }); site.add(a); }
   site.userData.lights = lights;        // the flight adds these to the scene itself, so hiding the site never changes the light count
   for (const b of beams) site.add(b);
 

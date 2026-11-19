@@ -36,12 +36,15 @@ The test is the only automated check: it runs `sim.js` without a browser (flat s
 
 **Graphics settings**: `gfx.js` holds the quality preset and options (resolution, sky/ground pass scale, shadow map size, MSAA, volumetric clouds, 3D bushes, bloom, FPS readout) in `apogee.gfx`, plus the panel opened by every "Graphics" button. `flight.js` reads `gfx` each frame (`resizePipeline`, `skyRes`, `applyShadows`); new costly features should get an option there rather than a hard-coded quality.
 
-**Effects**: `fx.js` (smoke particle system with world-space doubles drawn relative to the floating origin; engine plume shaders with blackbody colour and propellant `chem` 0/1/2), `boom.js` (fireballs, shock shells, mushroom clouds), `post.js` (physically based bloom; `outputPass()` = tone mapping plus lens vignette and 8-bit dither, used by flight and the title), `sun.js`. In flight the scene is drawn relative to `flight.origin` (the active vessel) — a floating origin.
+**Effects**: `fx.js` (smoke particle system with world-space doubles drawn relative to the floating origin, per-puff `soot`; engine plume shaders with blackbody colour and propellant `chem` 0/1/2; `Sparks`, an additive, velocity-stretched particle system for embers, flashes, glints and RCS gas, one draw call, budget scaled by `gfx.fx`; fireball, re-entry plasma and vapour-cone materials). `flight.js` drives them (`updateHeatFx`, `updateRcsFx`, `sepFx`, `explosionSparks`) from sim state and `world.fx` events (`explosion`, `puff`, `sep`, `blast`), `boom.js` (fireballs, shock shells, mushroom clouds), `post.js` (physically based bloom; `outputPass()` = tone mapping plus lens vignette and 8-bit dither, used by flight and the title), `sun.js`. In flight the scene is drawn relative to `flight.origin` (the active vessel) — a floating origin.
 
 **Two planets**: `compact` (R = 637.1 km, atmosphere scale `atmK = 3`, 6 h day) and `real` (Earth scale). Many terrain/atmosphere constants scale with `uTA = 1/sqrt(atmK)`.
 
+**Look (art direction)**: monochrome modern-launch-company look (gloss white, carbon black, stainless, concrete; colour only as a signal). `docs/STYLE.md` is the art bible; `src/style.js` enforces it: the named `PALETTE`, surface `RECIPES` (tileable noise, rain streaks, chips, seams → colour + normal + roughness maps together), `boxUV`/`prepareWorldSurface` (world-space UVs in metres plus a height-above-ground attribute) and `surfaceMaterial(colour, recipe)` with a ground-grime shader. Rocket materials (`meshes.js` `base()`) and site materials (`site.js` `siteMaterials()`) draw from it. `style.html` is the material board: palette, every material, real parts, raw maps; refresh it after editing `style.js`.
+
 ## Conventions
 
+- New colours go in `PALETTE` (by role), new surfaces as recipes in `style.js`; scene code never hard-codes a hex colour or draws its own weathering.
 - Units are SI throughout; comments explain the physics or visual intent behind constants — keep that style.
 - localStorage keys are prefixed `apogee.`; don't break saved designs/universes when changing part ids (old ids can be kept with `hidden: true`).
 - Performance target is a MacBook Air: the sky/ground pass is the most expensive part of the frame; `flight.resScale` lowers resolution adaptively.
