@@ -257,13 +257,13 @@ export class Flight {
     this.orbitBack = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xff6a2e, transparent: true, opacity: 0.28, depthTest: false })); this.orbitBack.frustumCulled = false; this.orbitBack.renderOrder = 2; ms.add(this.orbitBack);
     // the ground track: where the craft will pass overhead over the next orbit (the planet turns under it)
     this.trackGeo = new THREE.BufferGeometry(); this.trackGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(400 * 3), 3)); this.trackGeo.setDrawRange(0, 0);
-    this.trackLine = new THREE.Line(this.trackGeo, new THREE.LineDashedMaterial({ color: 0xb8321f, transparent: true, opacity: 0.9, dashSize: (pl.R / 1000) * 0.02, gapSize: (pl.R / 1000) * 0.012 }));
+    this.trackLine = new THREE.Line(this.trackGeo, new THREE.LineDashedMaterial({ color: 0xff6a2e, transparent: true, opacity: 0.55, dashSize: (pl.R / 1000) * 0.02, gapSize: (pl.R / 1000) * 0.012 }));
     this.trackLine.frustumCulled = false; this.mapPlanet.userData.planet.add(this.trackLine);
     this.trackT = 1e9; this.mapUI = { track: true, focus: 'planet' };
     mu.mat.uniforms.uSite.value.copy(world.siteFixed);
     const sprite = (tex, s) => { const sp2 = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false })); sp2.scale.setScalar(s); sp2.renderOrder = 5; ms.add(sp2); return sp2; };
     this.mkVessel = sprite(dotTexture('#ffffff', true), 0.04);
-    this.mkAp = sprite(dotTexture('#7fc4ff'), 0.016); this.mkPe = sprite(dotTexture('#7fe0b0'), 0.016);
+    this.mkAp = sprite(dotTexture('#ff6a2e'), 0.014); this.mkPe = sprite(dotTexture('#ff6a2e'), 0.014);
     this.mkDebris = [];
     this.mapOrb = { az: 0.6, el: 0.5, dist: (pl.R / 1000) * 3.6 };
     this.map = false; $('f-mapui').hidden = true; this.paused = false; this.warpIdx = 0; this.hudT = 0; this.navT = 0; this.time = 0; this.drag = null;
@@ -839,6 +839,7 @@ export class Flight {
     else if (k === 't') this.toggleSAS();
     else if (k === 'r') this.toggleRCS();
     else if (k === 'm') this.toggleMap();
+    else if (k === 'f' && this.map) this.mapUI.focus = this.mapUI.focus === 'craft' ? 'planet' : 'craft';
     else if (k === '.') this.setWarp(1);
     else if (k === ',') this.setWarp(-1);
     else if (k === '/') this.setWarp(-99);
@@ -1222,16 +1223,14 @@ export class Flight {
     const vis = p.z < 1 && Math.abs(p.x) < 1.1 && Math.abs(p.y) < 1.1;
     el.style.display = vis ? '' : 'none';
     if (!vis) return;
-    el.textContent = text;
+    el.textContent = text; el.classList.toggle('warn', color === 'warn');
     el.style.left = `${(p.x * 0.5 + 0.5) * w}px`; el.style.top = `${(-p.y * 0.5 + 0.5) * h}px`;
   }
   renderMap(w, h, theta) {
     const world = this.world, pl = world.planet, a = world.active;
     const o = this.mapOrb, ce = Math.cos(o.el);
     const cam = this.mapCam;
-    // the orbit panel takes the right side: frame the globe in the space left of it
-    const shift = THREE.MathUtils.clamp((w - 560) * 0.22, 0, 150);
-    cam.aspect = w / h; cam.setViewOffset(w + shift * 2, h, shift * 2, 0, w, h); cam.updateProjectionMatrix();
+    cam.aspect = w / h; cam.updateProjectionMatrix();
     // focus: the planet's centre, or the craft (eased, so switching glides)
     const ft = this.mapUI.focus === 'craft' ? this.origin.clone().multiplyScalar(0.001) : new THREE.Vector3();
     o.tgt = (o.tgt || new THREE.Vector3()).lerp(ft, 0.12);
@@ -1248,13 +1247,13 @@ export class Flight {
     this.orbitGeo.attributes.position.needsUpdate = true;
     this.orbitLine.visible = this.orbitBack.visible = !a?.landed;
     this.updateGroundTrack(el);
-    this.updateMapPanel(el);
+    this.updateMapInfo(el);
     this.mkPe.visible = this.mkAp.visible = this.orbitLine.visible;
     this.orbitPoint(el, 0, this.mkPe.position);
     if (el.e < 1) this.orbitPoint(el, Math.PI, this.mkAp.position); else this.mkAp.visible = false;
-    this.label('v', a?.name || 'Rocket', vp, '#ffffff', w, h);
-    if (this.mkAp.visible) this.label('ap', `Ap ${fmtDist(el.ap)}`, this.mkAp.position, '#4de1ff', w, h); else if (this.labels.ap) this.labels.ap.style.display = 'none';
-    if (this.mkPe.visible && el.pe > -pl.R * 0.5) this.label('pe', `Pe ${fmtDist(el.pe)}`, this.mkPe.position, el.pe > pl.atmTop ? '#56e39f' : '#ffb347', w, h); else if (this.labels.pe) this.labels.pe.style.display = 'none';
+    this.label('v', a && !a.landed ? `${a.name || 'Rocket'} · ${fmtDist(a.alt)} · ${Math.round(a.v.length())} m/s` : (a?.name || 'Rocket'), vp, '', w, h);
+    if (this.mkAp.visible) this.label('ap', `Ap ${fmtDist(el.ap)} · in ${fmtTime(el.tAp)}`, this.mkAp.position, '', w, h); else if (this.labels.ap) this.labels.ap.style.display = 'none';
+    if (this.mkPe.visible && el.pe > -pl.R * 0.5) this.label('pe', `Pe ${fmtDist(el.pe)}${el.e < 1 ? ` · in ${fmtTime(el.tPe)}` : ''}`, this.mkPe.position, el.pe > pl.atmTop ? '' : 'warn', w, h); else if (this.labels.pe) this.labels.pe.style.display = 'none';
     const debris = world.vessels.filter((v) => v !== a);
     while (this.mkDebris.length < debris.length) { const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.mkPe.material.map, color: 0x999999, depthTest: false, sizeAttenuation: false })); s.scale.setScalar(0.012); this.mapScene.add(s); this.mkDebris.push(s); }
     this.mkDebris.forEach((s, i) => {
@@ -1294,32 +1293,13 @@ export class Flight {
     this.trackGeo.attributes.position.needsUpdate = true; this.trackGeo.setDrawRange(0, k);
     this.trackLine.computeLineDistances();
   }
-  // the orbit panel beside the map
-  updateMapPanel(el) {
+  // the few numbers worth reading on the map, in one quiet line
+  updateMapInfo(el) {
     const box = $('f-mapui'); if (!box) return;
-    const a = this.world.active, pl = this.world.planet;
-    if (!this.mapUIBuilt) {
-      this.mapUIBuilt = true;
-      box.innerHTML = `<div class="mp-h">Orbit</div><div class="mp-rows"></div>
-        <div class="mp-ctl"><div class="seg"><button data-f="planet">Planet</button><button data-f="craft">Craft</button></div>
-        <div class="seg"><button data-z="-1" title="Zoom out">−</button><button data-z="1" title="Zoom in">+</button></div>
-        <button class="mp-tr" title="Where you will pass overhead">Ground track</button></div>
-        <div class="mp-hint">Drag to turn · scroll to zoom · M to close</div>`;
-      for (const b of box.querySelectorAll('[data-f]')) b.onclick = () => { this.mapUI.focus = b.dataset.f; if (b.dataset.f === 'craft') this.mapOrb.dist = Math.min(this.mapOrb.dist, (pl.R / 1000) * 1.9); };
-      for (const b of box.querySelectorAll('[data-z]')) b.onclick = () => { this.mapOrb.dist = THREE.MathUtils.clamp(this.mapOrb.dist * (b.dataset.z > 0 ? 0.75 : 1.33), (pl.R / 1000) * 1.15, 2e6); };
-      box.querySelector('.mp-tr').onclick = () => { this.mapUI.track = !this.mapUI.track; this.trackT = 1e9; };
-    }
-    for (const b of box.querySelectorAll('[data-f]')) b.classList.toggle('on', b.dataset.f === this.mapUI.focus);
-    box.querySelector('.mp-tr').classList.toggle('on', this.mapUI.track);
-    this.mapPanelT = (this.mapPanelT || 0) + (this.lastDt || 0.016); if (this.mapPanelT < 0.2) return; this.mapPanelT = 0;
-    const inSpace = a && !a.landed, closed = el.e < 1, peOk = el.pe > pl.atmTop;
-    const row = (k, v, cls = '') => `<div class="mp-r ${cls}"><span>${k}</span><b>${v}</b></div>`;
-    box.querySelector('.mp-rows').innerHTML = !inSpace ? row('Status', 'On the ground') :
-      row('Apoapsis', closed ? fmtDist(el.ap) : 'escaping', 'ap') + row('Time to apoapsis', closed ? fmtTime(el.tAp) : '—') +
-      row('Periapsis', fmtDist(el.pe), peOk ? 'pe' : 'warn') + row('Time to periapsis', closed ? fmtTime(el.tPe) : '—') +
-      row('Period', closed ? fmtTime(el.period) : '—') + row('Inclination', `${(el.inc * 180 / Math.PI).toFixed(1)}°`) +
-      row('Eccentricity', el.e.toFixed(3)) + row('Height', fmtDist(a.alt)) + row('Speed', `${Math.round(a.v.length())} m/s`) +
-      (closed && !peOk ? row('', el.pe < 0 ? 'This path meets the ground' : 'Periapsis dips into the air', 'note') : '');
+    this.mapPanelT = (this.mapPanelT || 0) + (this.lastDt || 0.016); if (this.mapPanelT < 0.25) return; this.mapPanelT = 0;
+    const a = this.world.active, closed = el.e < 1;
+    const parts = a && !a.landed ? [closed ? `Period ${fmtTime(el.period)}` : 'Escaping', `Inclination ${(el.inc * 180 / Math.PI).toFixed(1)}°`] : ['On the ground'];
+    box.innerHTML = `<span>${parts.join('<i>·</i>')}</span><small>Drag to turn · scroll to zoom · F to focus on the ${this.mapUI.focus === 'craft' ? 'planet' : 'craft'} · M to close</small>`;
   }
 
   bigMoment(title, sub) {
