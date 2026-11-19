@@ -158,9 +158,27 @@ float cloudCov(vec3 pF) {
 // averages out instead of aliasing into grain
 float gFoot = 1.0;
 float nLod(float scale) { return max(0.0, log2(gFoot * 64.0 / scale)); }
+// The billow noise is a small tileable texture (9 km period). Seen from high up a single sample repeats in rows,
+// so each scale is sampled twice: at scales whose ratio is irrational, the second turned about a tilted axis.
+// The sum never repeats within sight; the shapes stay cumulus.
+const mat3 CR1 = mat3(0.80, 0.36, -0.48, -0.60, 0.48, -0.64, 0.0, 0.80, 0.60);
+const mat3 CR2 = mat3(0.36, -0.48, 0.80, 0.48, -0.64, -0.60, 0.80, 0.60, 0.0);
+float cloudShape(vec3 loc) {
+  float a = textureLod(tNoise, loc * (1.0 / 9000.0), nLod(9000.0)).r;
+  float b = textureLod(tNoise, CR1 * loc * (1.0 / 14130.0) + 0.37, nLod(14130.0)).r;
+  float c = textureLod(tNoise, loc * (1.0 / 2250.0) + 0.53, nLod(2250.0)).r;
+  float d = textureLod(tNoise, CR2 * loc * (1.0 / 3530.0) + 0.71, nLod(3530.0)).r;
+  // averaging two samples flattens the contrast: scale the deviation back up
+  return (a * 0.55 + b * 0.45 - 0.5) * 0.7 * 1.3 + (c * 0.5 + d * 0.5 - 0.5) * 0.35 * 1.35;
+}
+// the large scales alone: for the light samples toward the sun, which only shade the cloud
+float cloudShapeLo(vec3 loc) {
+  float a = textureLod(tNoise, loc * (1.0 / 9000.0), nLod(9000.0)).r;
+  float b = textureLod(tNoise, CR1 * loc * (1.0 / 14130.0) + 0.37, nLod(14130.0)).r;
+  return (a * 0.55 + b * 0.45 - 0.5) * 0.7 * 1.3;
+}
 float cloudDens(vec3 loc, float hf, float cov, bool detail) {
-  float sh = textureLod(tNoise, loc * (1.0 / 9000.0), nLod(9000.0)).r, sh2 = textureLod(tNoise, loc * (1.0 / 2250.0) + 0.53, nLod(2250.0)).r;
-  float c = cov * 1.15 + (sh - 0.5) * 0.7 + (sh2 - 0.5) * 0.35;
+  float c = cov * 1.15 + (detail ? cloudShape(loc) : cloudShapeLo(loc));
   // flat base, domed top; denser cover grows taller towers
   float top = 0.4 + 0.6 * smoothstep(0.45, 0.9, c);
   float prof = smoothstep(0.0, 0.06, hf) * (1.0 - smoothstep(top * 0.45, top, hf));
@@ -224,16 +242,17 @@ vec4 marchClouds(vec3 d, vec3 dF, vec3 cF, float b, float tEnd, float muV, out f
 // The cloud layer drawn as a sheet, but with the volume's own shapes: the same coverage and the same noise at the
 // same place, so clouds keep their outlines when the camera climbs out of the volumetric range or looks past it.
 // Returns cover (x) and how much of the cloud lies toward the sun (y, shades the far sides for some relief).
-vec2 shellVol(vec3 loc, float cov, float foot) {
+// Returns cover (x, soft-edged), how much cloud lies toward the sun (y: the far sides go into shade) and the
+// thickness (z: cores are deep and bright on top, the thin margins let the ground show through and look grey).
+vec3 shellVol(vec3 loc, float cov, float foot) {
   gFoot = max(1.0, foot * 1.5);
-  float sh = textureLod(tNoise, loc * (1.0 / 9000.0), nLod(9000.0)).r, sh2 = textureLod(tNoise, loc * (1.0 / 2250.0) + 0.53, nLod(2250.0)).r;
-  float c = cov * 1.15 + (sh - 0.5) * 0.7 + (sh2 - 0.5) * 0.35;
-  float dd = smoothstep(0.4, 0.62, c);
+  float c = cov * 1.15 + cloudShape(loc);
+  float dd = smoothstep(0.38, 0.66, c);
   float det = textureLod(tNoise, loc * (1.0 / 1125.0) + 0.37, nLod(1125.0)).g;
-  dd = clamp((dd - (1.0 - det) * 0.45 * (1.0 - 0.6 * dd)) * 1.8, 0.0, 1.0);
+  dd = clamp((dd - (1.0 - det) * 0.45 * (1.0 - 0.6 * dd)) * 1.6, 0.0, 1.0);
   vec3 ls = loc + normalize(uSunF - normalize(uCamF) * dot(uSunF, normalize(uCamF))) * 700.0;
-  float cs = cov * 1.15 + (textureLod(tNoise, ls * (1.0 / 9000.0), nLod(9000.0)).r - 0.5) * 0.7 + (textureLod(tNoise, ls * (1.0 / 2250.0) + 0.53, nLod(2250.0)).r - 0.5) * 0.35;
-  return vec2(smoothstep(0.0, 0.45, dd), smoothstep(0.4, 0.62, cs));
+  float cs = cov * 1.15 + cloudShapeLo(ls);
+  return vec3(smoothstep(0.0, 0.6, dd), smoothstep(0.4, 0.62, cs), dd);
 }
 
 // fields: a jittered grid of cells (Voronoi). Returns the distance to the nearest cell border (in cell
@@ -448,6 +467,15 @@ void main() {
     vec3 sp = normalize(nF * uRc + uSunF * ((uRc - uR) / max(mu, 0.15)));
     float shadowCov = siteCov(textureLod(tData, lonlat(sp), 3.0).r, sp);
     float cs = 1.0 - 0.75 * cloudAlpha(shadowCov, sp, 1.0, 1e9);
+    // within the near layer's reach the shadow is cast by the same cloud shapes the camera sees overhead: the sun
+    // ray from this ground point meets the layer, and what is there darkens the ground
+    float nearG = uNoiseOn > 0.5 ? 1.0 - smoothstep(uVolMax * 1.5, uVolMax * 3.5, tG) : 0.0;
+    if (nearG > 0.0) {
+      vec3 pG0 = cF + dF * tG, pS0 = pG0 + uSunF * ((uRc - length(pG0)) / max(mu, 0.12));
+      gFoot = 400.0;
+      float sc = smoothstep(0.42, 0.62, cloudCov(pS0) * 1.15 + cloudShapeLo(uCloudRel + (pS0 - cF)));
+      cs = mix(cs, 1.0 - 0.7 * sc, nearG);
+    }
     // near the camera the shadows come from the volumetric clouds themselves (where the sun ray from this
     // ground point crosses the lower part of the layer), so every cumulus overhead drops its own shadow
     if (uVolK > 0.0 && tG < uVolMax) {
@@ -1059,7 +1087,7 @@ void main() {
     float a = cloudAlpha(siteCov(cd.r, cnF), cnF, 1.0, tC * uPix);
     // near: the volume's shapes (the noise repeats every few tens of km, so far off the map's own clouds take over)
     float nearK = uNoiseOn > 0.5 ? 1.0 - smoothstep(uVolMax * 1.5, uVolMax * 3.5, tC) : 0.0;
-    vec2 sv = vec2(0.0);
+    vec3 sv = vec3(0.0);
     if (nearK > 0.0) { sv = shellVol(uCloudRel + dF * tC, cloudCov(cnF), tC * uPix); a = mix(a, sv.x, nearK); }
     a *= smoothstep(0.0, 0.02, abs(dot(d, normalize(uCamPos + d * tC))));    // fade at grazing angles through the shell
     a *= mix(1.0, smoothstep(uVolMax * 0.7, uVolMax, tC), uVolK);              // the volume draws the near part
@@ -1070,9 +1098,9 @@ void main() {
       float self = cloudAlpha(textureLod(tData, lonlat(normalize(cnF + uSunF * 0.004)), 2.0).r, cnF + uSunF * 0.004, 1.0, 1e9);
       // near: shade the sides turned from the sun, and let thin edges show less bright top
       self = mix(self, sv.y * 0.9, nearK);
-      a *= mix(1.0, 0.85 + 0.15 * sv.x, nearK);
+      float thick = mix(1.0, 0.7 + 0.38 * sv.z, nearK);
       float below = uCC < 0.0 ? 1.0 : 0.0;
-      float lit = (0.35 + 0.65 * max(muC, 0.0)) * (1.0 - 0.45 * self) * mix(1.0, 0.32 + 0.3 * (1.0 - a), below);
+      float lit = (0.35 + 0.65 * max(muC, 0.0)) * (1.0 - 0.45 * self) * mix(1.0, 0.32 + 0.3 * (1.0 - a), below) * thick;
       float silver = pow(max(muV, 0.0), 12.0) * (1.0 - a) * 2.5;
       vec3 Eamb = uE * vec3(0.06, 0.09, 0.15) * smoothstep(-0.15, 0.3, muC) + uE * 0.0004;
       vec3 cc = 0.92 / PI * (uE * Tc * (lit + silver) + Eamb);
