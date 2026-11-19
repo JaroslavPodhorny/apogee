@@ -103,7 +103,7 @@ ${NOISE_GLSL}
 ${TERRAIN_CORE}
 ${BUSH_GLSL}
 varying vec3 vDir;
-uniform vec3 uCamPos, uSun, uSunF, uCamRel, uSite;
+uniform vec3 uCamPos, uSun, uSunF, uCamRel, uSite, uCamF, uCamSite;
 uniform float uCG, uCA, uCC, uRa, uRc, uRot, uPix, uEnv, uCamAlt, uSunDisc;
 uniform sampler2D tTer;          // terrain G-buffer: distance, height, normal (east, north)
 uniform float uTerOn, uTerK;
@@ -348,15 +348,20 @@ void main() {
   bool hitC = tC > 0.0 && tC < tG;
 
   // surface coordinates for every pixel (keeps texture derivatives valid)
-  vec3 dF = toFixed(d), cF = toFixed(uCamPos);
-  vec3 nF = normalize(cF + dF * (hitG ? tG : max(-b, 0.0)));
+  // the camera in the planet-fixed frame, and relative to the launch site, both worked out on the CPU in double
+  // precision: rotating a 600 km vector here, and subtracting two of them, leaves centimetre-to-decimetre
+  // rounding that changes every frame as the planet turns, and the ground would jitter under the rocket
+  vec3 dF = toFixed(d), cF = uCamF;
+  float tHit = hitG ? tG : max(-b, 0.0);
+  vec3 sOff = uCamSite + dF * tHit;
+  bool nearSite = dot(uCamSite, uCamSite) < 4e10;
+  vec3 nF = nearSite ? normalize(uSite * uR + sOff) : normalize(cF + dF * tHit);
   vec2 uvG = lonlat(nF), gx = wrapGrad(dFdx(uvG)), gy = wrapGrad(dFdy(uvG));
   vec3 cnF = normalize(cF + dF * max(tC, 0.0));
   vec2 uvC = lonlat(cnF), cx = wrapGrad(dFdx(uvC)), cy = wrapGrad(dFdy(uvC));
   // position in a flat frame at the launch site, from the world-space offset: acos(dot()) of two nearly equal
   // unit vectors in 32-bit floats jumps in steps of hundreds of metres, which striped everything near the base
   vec3 sE0 = normalize(cross(vec3(0.0, 1.0, 0.0), uSite)), sN0 = cross(uSite, sE0);
-  vec3 sOff = (cF + dF * (hitG ? tG : max(-b, 0.0))) - uSite * uR;
   vec2 sP = vec2(dot(sOff, sE0), dot(sOff, sN0));
   float siteD = length(sP) < 2e5 ? length(sP) : acos(clamp(dot(nF, uSite), -1.0, 1.0)) * uR;
   vec3 locA = uCamRel + dF * min(tG, 2e6), dlx = dFdx(locA), dly = dFdy(locA);   // for mip selection of ground detail
@@ -1066,7 +1071,7 @@ void main() {
 function skyUniforms(tex) {
   return {
     tDay: { value: tex.day }, tData: { value: tex.data }, tRelief: { value: tex.relief },
-    uCamPos: { value: new THREE.Vector3() }, uCamRot: { value: new THREE.Matrix3() }, uTan: { value: 1 }, uAspect: { value: 1 },
+    uCamPos: { value: new THREE.Vector3() }, uCamF: { value: new THREE.Vector3() }, uCamSite: { value: new THREE.Vector3() }, uCamRot: { value: new THREE.Matrix3() }, uTan: { value: 1 }, uAspect: { value: 1 },
     uSun: { value: new THREE.Vector3(1, 0, 0) }, uSunF: { value: new THREE.Vector3(1, 0, 0) }, uCamRel: { value: new THREE.Vector3() }, uSite: { value: new THREE.Vector3(1, 0, 0) },
     uCG: { value: 1 }, uCA: { value: 1 }, uCC: { value: 1 }, uR: { value: 1 }, uRa: { value: 1 }, uRc: { value: 1 }, uHr: { value: 8000 }, uHm: { value: 1200 }, uK: { value: 1 },
     uE: { value: SUN_E }, uLon0: { value: LON0 }, uRot: { value: 0 }, uTime: { value: 0 }, uPix: { value: 0.001 }, uEnv: { value: 0 }, uCamAlt: { value: 0 }, uSunDisc: { value: 1 },
@@ -1119,6 +1124,8 @@ export function updateSky(sky, { camera, camPos, theta, planet, sunDir, siteFixe
   const toF = (v, out) => { const c = Math.cos(theta), s = Math.sin(theta); return out.set(c * v.x - s * v.z, v.y, s * v.x + c * v.z); };
   toF(sunDir, u.uSunF.value);
   const cf = toF(camPos, new THREE.Vector3());
+  u.uCamF.value.copy(cf);
+  if (siteFixed) u.uCamSite.value.copy(cf).addScaledVector(siteFixed, -R); else u.uCamSite.value.set(1e9, 0, 0);
   const P = DETAIL_PERIOD;
   u.uCamRel.value.set(cf.x - Math.round(cf.x / P) * P, cf.y - Math.round(cf.y / P) * P, cf.z - Math.round(cf.z / P) * P);
   // cloud noise coordinates: camera minus the wind's drift (12 m/s westward, slight north), wrapped to the noise tiles

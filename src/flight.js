@@ -486,7 +486,7 @@ export class Flight {
         litPos.divideScalar(thrustSum); litDown.divideScalar(thrustSum);
         L.position.copy(litPos).add(litDown);
         L.color.copy(litCol.multiplyScalar(1 / thrustSum));
-        const fl = 0.86 + 0.14 * Math.sin(this.time * 41) * Math.sin(this.time * 17.7 + 1.3);
+        const fl = 0.93 + 0.07 * (Math.sin(this.time * 5.3) * 0.6 + Math.sin(this.time * 8.9 + 1.3) * 0.4);   // a slow flicker: fast ones strobe at the frame rate and make the lit ground jump
         L.intensity = 55 * Math.sqrt(thrustSum / 1000) * fl;
       } else L.intensity = 0;
     }
@@ -865,8 +865,20 @@ export class Flight {
       cam.aspect = w / h; cam.near = Math.max(0.5, c.dist * 0.025); cam.far = Math.max(25000, c.dist * 60, this.booms.list.length ? Math.min(400000, this.booms.reach() * 3 + this.blastDist()) : 0); cam.updateProjectionMatrix();
       cam.position.copy(off);
       if (this.shake > 0.001) { const k = this.shake * c.dist * 0.02, t = this.time; cam.position.x += Math.sin(t * 43.1) * k; cam.position.y += Math.sin(t * 37.7 + 1) * k; cam.position.z += Math.sin(t * 29.3 + 2) * k * 0.6; this.shake *= Math.exp(-dt * 2.2); }
-      if (a && a.thrust > 0 && !this.paused) { const k = Math.min(1, a.thrust / (a.mass * 18)) * (0.25 + 0.75 * Math.min(1, pl.pressure(a.alt))) * c.dist * 0.0022; const t = this.time; cam.position.x += Math.sin(t * 31.7) * Math.sin(t * 7.3) * k * 0.5; cam.position.y += Math.sin(t * 27.1 + 1.3) * Math.sin(t * 5.9) * k * 0.5; cam.position.z += Math.sin(t * 23.3 + 2.1) * k * 0.3; }
-      cam.up.copy(up); cam.lookAt(0, 0, 0); cam.updateMatrixWorld();
+      // engine rumble: a smooth, low vibration felt near the pad (strongest as it lifts off, gone once it is well
+      // clear of the ground), moving the camera and its aim together like a camera on a tripod nearby, so the
+      // whole view trembles a little instead of the ground twitching round a rocket pinned to the screen
+      if (a && a.thrust > 0 && !this.paused) {
+        const hag = Math.max(0, a.alt - this.alt0);
+        const near = Math.exp(-hag / 120) * (0.35 + 0.65 * Math.min(1, pl.pressure(a.alt)));
+        const k = Math.min(1, a.thrust / (a.mass * 15)) * near * Math.min(c.dist, 300) * 0.0011;
+        if (k > 1e-4) {
+          const t = this.time, nz = (f, p) => Math.sin(t * f + p) * 0.6 + Math.sin(t * f * 1.73 + p * 2.1) * 0.4;
+          this.rumble = (this.rumble || new THREE.Vector3()).set(nz(9.1, 0.3), nz(7.7, 1.9), nz(8.3, 4.1)).multiplyScalar(k);
+          cam.position.add(this.rumble);
+        } else this.rumble = null;
+      } else this.rumble = null;
+      cam.up.copy(up); cam.lookAt(this.rumble ? this.rumble.clone().multiplyScalar(0.85) : new THREE.Vector3(0, 0, 0)); cam.updateMatrixWorld();
       // the ground and sky are drawn from where the camera really is, shake included: otherwise the rumble moves
       // the rocket and the pad but not the ground under them, and the ground seems to slide about
       cp.copy(this.origin).add(cam.position); camAlt = cp.length() - pl.R;
