@@ -1,0 +1,45 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+Apogee: a browser 3D rocket sandbox (build in a hangar, fly to orbit, dock, build stations, set off warheads). Plain ES modules + three.js r169 vendored in `vendor/` — no bundler, no build step, no npm dependencies. Deployed as-is to GitHub Pages from `main` (https://jaroslavpodhorny.github.io/apogee/); every push to `main` redeploys. All asset paths must stay relative (the site is served under `/apogee/`).
+
+## Commands
+
+```bash
+python3 serve.py 5173          # dev server (no-cache), also `npm start`; .claude/launch.json config "apogee"
+npm test                       # = node test/orbit.test.mjs compact 0
+node test/orbit.test.mjs <compact|real> <stockIndex>   # fly stock rocket #i to orbit and back, headless
+```
+
+The test is the only automated check: it runs `sim.js` without a browser (flat sphere, no terrain) and should print `ORBIT at ...` and `LANDED ...`. Stock rockets 3 and 4 have no heat shield and are expected to be lost on re-entry. Rendering changes can only be verified in a browser (`window.apogee` exposes `builder`, `flight`, `setMode`). For screenshots from a background tab, call `apogee.flight.frame(dt, w, h)` manually (rAF does not run in background tabs) and read the canvas.
+
+## Architecture
+
+**Modes** (`main.js`): one WebGL renderer shared by the title screen, the hangar (`builder.js`) and flight (`flight.js`). `Builder` edits a *design* (`{name, parts:[{id,type,parent,attach,stage,symId}]}`) persisted in localStorage; launching passes a cloned design to `Flight.start(design, kind)`.
+
+**Parts → physics → render pipeline**
+- `parts.js`: pure data catalog (SI units). Behaviour is driven by def fields (`engine`, `fuel`, `decoupler`, `fairingBase`, `dock`, `warhead`, `les`, `deploy`, `chute`, `shield`, …). Part frame: +Y along the stack, radial parts +X outward.
+- `rocket.js`: design tree logic shared by hangar and sim — `computeLayout`, symmetry attach/detach, `autoStage`, delta-v `analyze`, and `enclosures()` which derives **interstages** (a stack decoupler with an engine on top grows a shell) and **fairing shells** (profile wrapped round everything stacked on a fairing base). The same function feeds the hangar meshes, analysis mass, and flight physics.
+- `sim.js`: `World`/`Vessel` rigid-body physics in an inertial planet-centred frame (planet spins about +Y). Contains staging, aero/heating, docking/undocking (merges vessel part trees, re-rooting the docked tree), fairing jettison (spawns synthetic `fhalf` part defs), blasts (Kinney–Graham overpressure, Sedov shock), LES abort, persistence (`serializeVessel`/`restoreVessel`, `World.serialize/restore`) and rails/Kepler propagation for vessels > `loadR` (2.5 km) from the active one. No rendering code here.
+- `meshes.js`: procedural models per `def.shape` (cached by def id, merged by material); `interstageMesh`/`fairingHalfMesh` are built per rocket because they depend on context.
+- `universe.js`: named saved worlds in localStorage (`apogee.universes`, `apogee.u.<id>.<compact|real>`), each with clock, inertial sun direction, persisted vessels and craters. Launching advances world time to the chosen launch hour.
+
+**Planet rendering** — the ground is *not* scene geometry:
+- `terrain.js`: CDLOD cube-sphere. `terrainH()` (GLSL in `TERRAIN_CORE`) has an exact JS mirror `Terrain.height()` used by physics (`groundAt`) — **any change to the terrain height must be made in both** and verified to match (GPU vs CPU agreed to ~1 cm). `terrainHd(n, spacing)` adds LOD-faded fine roughness for mesh vertices. The launch site is flattened; `siteRelief` adds rolling ground and lake hollows (`LAKE_LV`).
+- Terrain patches render only a G-buffer (distance, height, normal). `planet.js` `SKY_FRAG` is one full-screen pass that shades sky, atmosphere, clouds, sea **and all ground colour/detail** from that G-buffer, at reduced resolution, then `flight.resolveSky` upscales (bicubic) and temporally steadies clouds; the result becomes `scene.background`. Meshes (rocket, site, smoke, bushes) render on top; the terrain does not depth-occlude them, so effects near the ground clip themselves (see `boom.js`).
+- Ground detail is faded by pixel footprint (`footA`, `footL` for regular patterns) to avoid shimmer. Near the base, coordinates use the site tangent frame `sP` built from CPU-precise `uCamSite`/`uCamF`; avoid reconstructing positions from 600 km float32 vectors in the shader (causes jitter/striping).
+- `bushes.js`: GLSL shared by the ground shader and `scatter.js` (instanced 3D bushes near the camera) so painted and 3D vegetation agree (`landUse`, `farmMask`, `lakeField`, `roadDist`, `copseField`, `bushDensity`). Change placement here, not in one consumer.
+- `site.js`: launch complex meshes; its ground mesh draws only built surfaces over the planet's ground.
+
+**Effects**: `fx.js` (smoke particle system with world-space doubles drawn relative to the floating origin; engine plume shaders with blackbody colour and propellant `chem` 0/1/2), `boom.js` (fireballs, shock shells, mushroom clouds), `post.js` (physically based bloom), `sun.js`. In flight the scene is drawn relative to `flight.origin` (the active vessel) — a floating origin.
+
+**Two planets**: `compact` (R = 637.1 km, atmosphere scale `atmK = 3`, 6 h day) and `real` (Earth scale). Many terrain/atmosphere constants scale with `uTA = 1/sqrt(atmK)`.
+
+## Conventions
+
+- Units are SI throughout; comments explain the physics or visual intent behind constants — keep that style.
+- localStorage keys are prefixed `apogee.`; don't break saved designs/universes when changing part ids (old ids can be kept with `hidden: true`).
+- Performance target is a MacBook Air: the sky/ground pass is the most expensive part of the frame; `flight.resScale` lowers resolution adaptively.
