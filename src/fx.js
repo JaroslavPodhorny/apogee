@@ -8,7 +8,7 @@
 // Positions live in the planet-centred frame (doubles) and are drawn relative to the floating origin.
 import * as THREE from '../vendor/three.module.js';
 
-const MAX = 2400;
+const MAX_DEFAULT = 2400;
 
 // 2×2 atlas of cauliflower puffs: big lobes, a ring of billows and a fringe of small bumps, so the
 // outline is lumpy and crisp. R = density (the painted coverage), G = the same blurred: a smooth dome
@@ -35,7 +35,9 @@ function puffAtlas() {
 }
 
 export class Smoke {
-  constructor() {
+  // max: how many puffs at once (the launch cloud and trail share them; full, the most faded are recycled)
+  constructor(max = MAX_DEFAULT) {
+    const MAX = (this.max = max);
     const base = new THREE.PlaneGeometry(1, 1);
     const g = (this.geo = new THREE.InstancedBufferGeometry());
     g.index = base.index; g.attributes.position = base.attributes.position;
@@ -86,8 +88,12 @@ export class Smoke {
           float hy = texture2D(tPuff, tx(vUv + vec2(0.0, e))).g - texture2D(tPuff, tx(vUv - vec2(0.0, e))).g;
           vec2 g2 = mat2(vRot0.x, vRot0.y, -vRot0.y, vRot0.x) * vec2(hx, hy);
           vec3 n = normalize(vec3(-g2 * 11.0, max(s0.g, 0.12)));
-          float occl = dens(vUv + vLight * 0.08) + 0.6 * dens(vUv + vLight * 0.18);
+          // self-shadow: density toward the sun as it falls across the screen. With the sun behind the camera
+          // (front light) that direction shrinks to nothing and the whole sunlit face is lit: no shadow then
+          float ll = length(uSunV.xy);
+          float occl = dens(vUv + vLight * 0.08 * ll) + 0.6 * dens(vUv + vLight * 0.18 * ll);
           float self = clamp(1.15 - occl * 1.25, 0.07, 1.0);
+          self = mix(self, 1.0, smoothstep(0.2, 0.85, uSunV.z) * (0.55 + 0.45 * (1.0 - ll)));
           float wrap = clamp(dot(n, uSunV) * 0.8 + 0.2, 0.0, 1.0);
           // light through thin edges when looking toward the sun
           float back = pow(max(-uSunV.z, 0.0), 3.0) * (1.0 - d) * 1.6;
@@ -113,6 +119,7 @@ export class Smoke {
   clear() { this.n = 0; this.geo.instanceCount = 0; this.trails.clear(); }
   emit(pos, vel, size0, size1, life, heat, emitter, opacity = 1, soot = 0) {
     let i = this.n;
+    const MAX = this.max;
     if (i >= MAX) { // full: reuse the most faded of a few random slots
       let best = 0, ba = -1;
       for (let k = 0; k < 48; k++) { const j = Math.floor(Math.random() * MAX), r = this.f[j * 10] / this.f[j * 10 + 1]; if (r > ba) { ba = r; best = j; } }
@@ -150,7 +157,7 @@ export class Smoke {
   }
   // Draw particles simulated elsewhere: items = [{ x, y, z (planet-centred), size, alpha, heat, rot, cell }]
   drawRaw(items, origin, camera, groundUp, groundDist) {
-    const n = Math.min(MAX, items.length);
+    const n = Math.min(this.max, items.length);
     const cx = camera.position.x + origin.x, cy = camera.position.y + origin.y, cz = camera.position.z + origin.z;
     for (const it of items) it.dd = (it.x - cx) ** 2 + (it.y - cy) ** 2 + (it.z - cz) ** 2;
     items.sort((a, b) => b.dd - a.dd);

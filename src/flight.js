@@ -181,7 +181,7 @@ export class Flight {
     this.sunLight.shadow.bias = -0.0004; this.sunLight.shadow.normalBias = 0.04;
     scene.add(this.sunLight, this.sunLight.target);
     this.envT = 1e9; this.envRT = null; this.exposure = 1;
-    this.smoke = new Smoke(); scene.add(this.smoke.mesh);
+    this.smoke = new Smoke(gfx.fx === 'low' ? 2400 : 5000); scene.add(this.smoke.mesh);   // room for the launch cloud and the trail together
     this.sparks = new Sparks(); scene.add(this.sparks.mesh);
     this.engineLight = new THREE.PointLight(0xffaa66, 0, 0, 2); scene.add(this.engineLight); this.smoke.flameLight = this.engineLight;   // always present: switching a light on never recompiles shaders
     this.sun = new Sun(); scene.add(this.sun.mesh, this.sun.flare);
@@ -667,7 +667,10 @@ export class Flight {
     if (imp > 0.02 && this.simDt > 0) {
       const up = noz.clone().normalize(), e1 = new THREE.Vector3().crossVectors(up, Math.abs(up.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize(), e2 = new THREE.Vector3().crossVectors(up, e1);
       const g0 = noz.clone().addScaledVector(up, -hn);
-      const n = Math.min(8, Math.floor((this.billowAcc = (this.billowAcc || 0) + this.simDt * 38 * imp * (0.4 + 0.6 * pw) * (solid ? 1.3 : 1))));
+      // bigger engines raise a bigger cloud: billows grow and linger with the engine's thrust (a light rocket's
+      // puffs ~25 m, a heavy lifter's well over 60 m, rolling across the pad for a minute)
+      const K = THREE.MathUtils.clamp(Math.sqrt(p.def.engine.thrust / 1e6), 0.6, 2.6);
+      const n = Math.min(8, Math.floor((this.billowAcc = (this.billowAcc || 0) + this.simDt * 38 * imp * (0.4 + 0.6 * pw) * (solid ? 1.3 : 1) * (0.8 + 0.25 * K))));
       this.billowAcc -= n;
       for (let i = 0; i < n; i++) {
         const a = Math.random() * Math.PI * 2, dir = e1.clone().multiplyScalar(Math.cos(a)).addScaledVector(e2, Math.sin(a));
@@ -675,7 +678,7 @@ export class Flight {
         const sp = Math.max(er * 2, (Lfull - hn) * 0.25 + er * 2);
         const pos = g0.clone().addScaledVector(dir, sp * (0.8 + Math.random() * 0.6)).addScaledVector(up, er * (0.6 + Math.random() * 1.5));
         const vel = dir.multiplyScalar(25 + Math.random() * 30).addScaledVector(up, 1 + Math.random() * 7).add(air);
-        const id = this.smoke.emit(pos, vel, er * 3 + 2, (er * 10 + 24) * (0.8 + Math.random() * 0.5), 18 + Math.random() * 14, 0.8, g0, Math.min(1, 0.8 * (0.5 + 0.5 * pw)) * imp);
+        const id = this.smoke.emit(pos, vel, er * 3 + 2, (er * 10 + 24) * (0.55 + 0.45 * K) * (0.8 + Math.random() * 0.5), (24 + Math.random() * 20) * (0.8 + 0.2 * K), 0.8, g0, Math.min(1, 0.8 * (0.5 + 0.5 * pw)) * imp);
         this.smoke.f[id * 10 + 8] = 1;     // already on the ground: it billows up from here
       }
     }
