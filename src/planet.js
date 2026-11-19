@@ -275,6 +275,33 @@ vec3 vorE(vec2 x, int seed) {
   }
   return vec3(md, n + mg);
 }
+// Fields inside a farm: the patchwork seen from the air. Long rectangles in rows that follow the farm's own
+// direction; each row has its own depth and each field its own length, and the boundaries are jittered so no
+// two fields match. Returns (distance to the field's edge in units of FS, row id, field id).
+float fH(int a, int b, int s) { return hash3(ivec3(a, b, s)); }
+vec3 fieldCell(vec2 p, float ang, float FS) {
+  vec2 d = vec2(cos(ang), sin(ang));
+  vec2 q = vec2(dot(p, d), dot(p, vec2(-d.y, d.x)));          // along the rows, across them
+  float rowH = FS * 0.75;
+  int r0 = int(floor(q.y / rowH)), r = r0;
+  float y0 = 0.0, y1 = 0.0;
+  for (int k = -1; k <= 1; k++) {
+    int rr = r0 + k;
+    float a = (float(rr) + 0.7 * (fH(rr, 0, 81) - 0.5)) * rowH, b = (float(rr + 1) + 0.7 * (fH(rr + 1, 0, 81) - 0.5)) * rowH;
+    if (q.y >= a && q.y < b) { r = rr; y0 = a; y1 = b; }
+  }
+  float colW = FS * mix(1.1, 2.8, fH(r, 0, 83));
+  float x = q.x + fH(r, 0, 85) * colW * 9.0;
+  int c0 = int(floor(x / colW)), c = c0;
+  float x0 = 0.0, x1 = 0.0;
+  for (int k = -1; k <= 1; k++) {
+    int cc = c0 + k;
+    float a = (float(cc) + 0.8 * (fH(r, cc, 87) - 0.5)) * colW, b = (float(cc + 1) + 0.8 * (fH(r, cc + 1, 87) - 0.5)) * colW;
+    if (x >= a && x < b) { c = cc; x0 = a; x1 = b; }
+  }
+  float dist = min(min(q.y - y0, y1 - q.y), min(x - x0, x1 - x));
+  return vec3(dist / FS, float(r), float(c));
+}
 // a stylised but plausible crop palette (linear albedo)
 vec3 cropCol(float h) {
   return h < 0.17 ? vec3(0.28, 0.19, 0.06)   // ripe wheat
@@ -712,17 +739,20 @@ void main() {
       float farmK = farmMask(p, siteD) * (1.0 - smoothstep(0.08, 0.14, slope));
       float hedgeT = 0.0, hedgeSh = 0.0;
       if (farmK > 0.0) {
-        vec3 vp = vorE(pw / 1500.0, 61);
+        // farms: big irregular blocks (a strongly warped cellular pattern, so they never read as a honeycomb)
+        vec2 pf = pw + (vec2(vnoise(vec3(p / 3200.0, 21.0), 0), vnoise(vec3(p / 3200.0, 23.0), 0)) - 0.5) * 900.0;
+        vec3 vp = vorE(pf / 1500.0, 61);
         float ph = hash3(ivec3(ivec2(vp.yz), 63)), ph2 = hash3(ivec3(ivec2(vp.yz), 67));
         vec3 parcel = mix(cropCol(fract(ph * 1.7)), cropCol(fract(ph * 3.1 + 0.3)), 0.5);
         vec3 fc = mix(vec3(0.1, 0.095, 0.042), parcel, smoothstep(3500.0, 900.0, footA));     // far: the farm's average tone
         float wF = smoothstep(160.0, 35.0, footA);
         if (wF > 0.0) {
           float FS = mix(170.0, 380.0, ph2);                      // each farm its own field size
-          vec3 v = vorE(pw / FS, 3);
-          ivec2 id = ivec2(v.yz);
+          float angF = ph * 3.1416;                               // the farm's layout direction
+          vec3 v = fieldCell(pw, angF, FS);
+          ivec2 id = ivec2(v.yz) + ivec2(vp.yz) * 977;
           float h1 = hash3(ivec3(id, 41)), h2 = hash3(ivec3(id, 43)), h3 = hash3(ivec3(id, 47)), h4 = hash3(ivec3(id, 53));
-          float ang = (ph * 2.0 + h2 * 0.5) * 3.1416;             // neighbouring fields roughly share a direction
+          float ang = angF + (h2 > 0.72 ? 1.5708 : 0.0);           // crop rows along the field, now and then across it
           vec2 dir = vec2(cos(ang), sin(ang));
           float sdir = dot(p, dir), across = dot(p, vec2(-dir.y, dir.x));
           // many fields are split into long strips (different crop or growth in each)
@@ -761,12 +791,12 @@ void main() {
           }
           // borders: hedgerows (with trees along them) or pale grass margins; lanes between farms
           float bw = fwidth(bd) + 0.3;
-          bool hedge = h3 < 0.6;
-          float hedgeW = hedge ? 3.0 : 1.8;
+          bool hedge = h3 < 0.3;                                  // hedges on some borders; most fields just meet
+          float hedgeW = hedge ? 3.0 : 1.2;
           float border = 1.0 - smoothstep(hedgeW - bw, hedgeW + bw, bd);
           vec3 bc = hedge ? vec3(0.016, 0.032, 0.011) : vec3(0.07, 0.085, 0.034);
           // a hedge thinner than a pixel is mostly field colour: seen from high up, fields meet softly
-          crop = mix(crop, bc, border * mix(1.0, 0.4, smoothstep(1.5, 6.0, footA)));
+          crop = mix(crop, bc, border * (hedge ? 1.0 : 0.5) * mix(1.0, 0.35, smoothstep(1.5, 6.0, footA)));
           float lane = 1.0 - smoothstep(2.5 - fwidth(vp.x * 1500.0), 2.5 + fwidth(vp.x * 1500.0), vp.x * 1500.0);
           crop = mix(crop, vec3(0.12, 0.1, 0.075), lane * smoothstep(12.0, 3.0, footA));
           // hedgerow trees: crowns from the cellular detail texture, only along hedges, each with its shadow
@@ -775,8 +805,8 @@ void main() {
             float crown = textureGrad(tGround, gUV(26.0), gdx / 26.0, gdy / 26.0).r;
             float along = (1.0 - smoothstep(4.0, 7.5, bd)) * step(0.35, hash3(ivec3(id, 71)));
             hedgeT = smoothstep(0.35, 0.6, crown) * along * kT;
-            vec3 vs = vorE((pw - sun2 * 9.0 * shLen) / FS, 3);
-            hedgeSh = (1.0 - smoothstep(4.0, 9.0, vs.x * FS)) * step(0.35, hash3(ivec3(ivec2(vs.yz), 71))) * kT * (1.0 - hedgeT);
+            vec3 vs = fieldCell(pw - sun2 * 9.0 * shLen, angF, FS);
+            hedgeSh = (1.0 - smoothstep(4.0, 9.0, vs.x * FS)) * step(0.35, hash3(ivec3(ivec2(vs.yz) + ivec2(vp.yz) * 977, 71))) * kT * (1.0 - hedgeT);
           }
           fc = mix(fc, crop, wF);
         }
