@@ -82,7 +82,7 @@ export class Builder {
           #include <colorspace_fragment>
         }`,
     });
-    const pad0 = new THREE.Mesh(new THREE.CylinderGeometry(7, 7, 0.1, 64), new THREE.MeshBasicMaterial({ color: 0x1f2226 }));
+    const pad0 = new THREE.Mesh(new THREE.CylinderGeometry(7, 7, 0.1, 64), new THREE.MeshBasicMaterial({ color: 0x1e1f21 }));
     pad0.position.y = -0.06; this.floor.add(pad0);
     const pad = new THREE.Mesh(new THREE.CircleGeometry(80, 128), floorMat);
     pad.rotation.x = -Math.PI / 2; pad.position.y = 0.004; pad.renderOrder = 2; this.floor.add(pad);
