@@ -60,7 +60,7 @@ kbd { font: 600 11px/1 var(--text); display: inline-block; padding: 3px 5px 2px;
 #title-box nav button:hover { color: var(--ink); padding-left: 6px; }
 #title-box nav button:hover::after { opacity: 1; }
 #title-box nav button.primary { color: var(--ink); font-weight: 600; }
-#t-world, #t-sound { font-size: 15px !important; }
+#t-world, #t-gfx, #t-sound { font-size: 15px !important; }
 #t-badges { margin-top: 26px; display: flex; gap: 22px; }
 #t-badges span { font: 500 13px var(--text); color: var(--ink-3); }
 #t-badges span.got { color: var(--ink); }
@@ -282,3 +282,18 @@ kbd { font: 600 11px/1 var(--text); display: inline-block; padding: 3px 5px 2px;
 #t-unis .urow small { color: var(--ink-3); font-size: 12px; }
 #t-unis .row { display: flex; gap: 22px; align-items: center; }
 #t-unis .row .solid { margin-left: auto; }
+
+/* graphics settings */
+#gfx { position: fixed; z-index: 30; width: 480px; max-width: 94vw; max-height: 90vh; overflow-y: auto; }
+#gfx .gl { margin: 6px 0 18px; }
+#gfx .gr { display: flex; align-items: center; gap: 14px; padding: 8px 0; border-top: 1px solid rgba(243, 241, 236, 0.08); }
+#gfx .gr > span { flex: 1; color: var(--ink-2); font-size: 13.5px; }
+#gfx .seg { display: flex; border: 1px solid var(--rule); border-radius: 2px; }
+#gfx .seg button { padding: 5px 11px; font-size: 12.5px; color: var(--ink-2); border-left: 1px solid var(--rule); min-width: 46px; transition: color 0.12s, background 0.12s; }
+#gfx .seg button:first-child { border-left: 0; }
+#gfx .seg button:hover { color: var(--ink); }
+#gfx .seg button.on { background: var(--ink); color: #111214; }
+#gfx .row { display: flex; align-items: center; gap: 16px; }
+#gfx .row small { color: var(--ink-3); font-size: 12px; }
+#gfx .row .solid { margin-left: auto; }
+#fps { position: fixed; left: 50%; transform: translateX(-50%); bottom: 4px; z-index: 31; font: 500 12px/1 var(--num); color: var(--ink-2); text-shadow: var(--shadow); pointer-events: none; letter-spacing: 0.02em; }

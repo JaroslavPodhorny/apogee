@@ -34,7 +34,9 @@ The test is the only automated check: it runs `sim.js` without a browser (flat s
 - `bushes.js`: GLSL shared by the ground shader and `scatter.js` (instanced 3D bushes near the camera) so painted and 3D vegetation agree (`landUse`, `farmMask`, `lakeField`, `roadDist`, `copseField`, `bushDensity`). Change placement here, not in one consumer.
 - `site.js`: launch complex meshes; its ground mesh draws only built surfaces over the planet's ground.
 
-**Effects**: `fx.js` (smoke particle system with world-space doubles drawn relative to the floating origin; engine plume shaders with blackbody colour and propellant `chem` 0/1/2), `boom.js` (fireballs, shock shells, mushroom clouds), `post.js` (physically based bloom), `sun.js`. In flight the scene is drawn relative to `flight.origin` (the active vessel) — a floating origin.
+**Graphics settings**: `gfx.js` holds the quality preset and options (resolution, sky/ground pass scale, shadow map size, MSAA, volumetric clouds, 3D bushes, bloom, FPS readout) in `apogee.gfx`, plus the panel opened by every "Graphics" button. `flight.js` reads `gfx` each frame (`resizePipeline`, `skyRes`, `applyShadows`); new costly features should get an option there rather than a hard-coded quality.
+
+**Effects**: `fx.js` (smoke particle system with world-space doubles drawn relative to the floating origin; engine plume shaders with blackbody colour and propellant `chem` 0/1/2), `boom.js` (fireballs, shock shells, mushroom clouds), `post.js` (physically based bloom; `outputPass()` = tone mapping plus lens vignette and 8-bit dither, used by flight and the title), `sun.js`. In flight the scene is drawn relative to `flight.origin` (the active vessel) — a floating origin.
 
 **Two planets**: `compact` (R = 637.1 km, atmosphere scale `atmK = 3`, 6 h day) and `real` (Earth scale). Many terrain/atmosphere constants scale with `uTA = 1/sqrt(atmK)`.
 

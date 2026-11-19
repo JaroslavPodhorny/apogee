@@ -4,8 +4,9 @@
 //   lit disc you see from 1 km and the shrub you fly past at 50 m are the same bush.
 // · A window of G×G cells follows the camera; a small pass works out, per cell, whether a bush grows there,
 //   its size, and where it stands on the terrain (relative to the window, so float precision holds).
-// · One instanced draw renders them all; empty cells collapse to nothing. Beyond ~240 m they shrink away
-//   and the ground's painted bushes take over at the same spots.
+// · The window is read back (asynchronously, so the GPU never stalls) and only the cells that hold a bush
+//   within reach become instances: one instanced draw of a few hundred bushes instead of 6400 mostly empty
+//   slots. Beyond ~240 m they shrink away and the ground's painted bushes take over at the same spots.
 // · Each bush is a cluster of lumpy lobes with soft normals, leaf-clump shading, darker inside and below,
 //   and it casts a real shadow.
 import * as THREE from '../vendor/three.module.js';
@@ -79,29 +80,32 @@ export class Scatter {
 
     // --- the bushes ---
     const geo = new THREE.InstancedBufferGeometry().copy(bushGeometry());
-    geo.instanceCount = G * G; geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
+    this.aBush = new THREE.InstancedBufferAttribute(new Float32Array(G * G * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    this.aCell = new THREE.InstancedBufferAttribute(new Float32Array(G * G * 2), 2).setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('aBush', this.aBush); geo.setAttribute('aCell', this.aCell);
+    geo.instanceCount = 0; geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
+    this.geo = geo; this.buf = new Float32Array(G * G * 4); this.pending = false;
     this.U = {
-      tScatter: { value: this.rt.texture }, uRelW: { value: new THREE.Vector3() }, uFrame: { value: new THREE.Matrix3() },
-      uCamScene: terrain.sceneU.uCamScene, uRotS: terrain.sceneU.uRotS, uCellV: { value: new THREE.Vector2() },
+      uRelW: { value: new THREE.Vector3() }, uFrame: { value: new THREE.Matrix3() },
+      uCamScene: terrain.sceneU.uCamScene, uRotS: terrain.sceneU.uRotS,
     };
     const vert = (sh) => {
       Object.assign(sh.uniforms, this.U);
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', /* glsl */`#include <common>
           ${BUSH_HASH}
-          uniform sampler2D tScatter; uniform vec3 uRelW, uCamScene; uniform mat3 uFrame, uRotS; uniform vec2 uCellV;
+          uniform vec3 uRelW, uCamScene; uniform mat3 uFrame, uRotS;
+          attribute vec4 aBush; attribute vec2 aCell;
           varying vec3 vBush; varying vec4 vLeaf;`)
         .replace('void main() {', /* glsl */`void main() {
-          ivec2 cg = ivec2(gl_InstanceID % ${G}, gl_InstanceID / ${G});
-          vec4 sc = texelFetch(tScatter, cg, 0);
+          vec4 sc = aBush;
           float r = floor(sc.w) / 100.0, id = fract(sc.w) / 0.99;
-          ivec2 cell = ivec2(uCellV) + cg - ${G / 2};
+          ivec2 cell = ivec2(aCell);
           float dist = length(uRelW + sc.xyz);
           float sz = r * (1.0 - smoothstep(${FAR - 25}.0, ${FAR}.0, dist));
           vec3 lp = position * vec3(sz, sz * (0.75 + 0.4 * bHash(cell, 101)), sz), ln = normal;
           float an = id * 6.2832 * 7.0, ca = cos(an), sa = sin(an);
           lp.xz = mat2(ca, sa, -sa, ca) * lp.xz; ln.xz = mat2(ca, sa, -sa, ca) * ln.xz;
-          if (sc.w <= 0.0) lp = vec3(0.0);
           // the same colour the ground shader gives this bush from afar
           vBush = mix(vec3(0.045, 0.085, 0.024), vec3(0.075, 0.095, 0.03), id) * (0.85 + 0.3 * bHash(cell, 99));
           vBush *= mix(0.45, 1.1, smoothstep(0.0, 0.9, position.y));            // darker inside and underneath
@@ -144,18 +148,43 @@ export class Scatter {
     const ic = Math.floor(x / BUSH_CELL), jc = Math.floor(y / BUSH_CELL);
     const xc = (ic + 0.5) * BUSH_CELL, yc = (jc + 0.5) * BUSH_CELL;
     const key = `${ic}/${jc}`;
-    if (key !== this.key) {
+    if (key !== this.key && !this.pending) {
       this.key = key;
       this.pU.uCell.value.set(ic, jc); this.pU.uXc.value.set(xc, yc);
       const r = this.renderer, prev = r.getRenderTarget();
       r.setRenderTarget(this.rt); r.render(this.passScene, this.passCam); r.setRenderTarget(prev);
-      this.U.uCellV.value.set(ic, jc);
+      // read the window back without stalling; until it arrives the previous set stays, placed exactly
+      // (each set keeps the centre it was computed about)
+      this.pending = true;
+      const snap = { ic, jc, xc, yc, x, y };
+      r.readRenderTargetPixelsAsync(this.rt, 0, 0, G, G, this.buf).then(() => this.compact(snap)).catch(() => {}).finally(() => { this.pending = false; });
     }
-    const zc = Math.sqrt(R * R - xc * xc - yc * yc);
-    const wref = site.clone().multiplyScalar(zc).addScaledVector(this.sE, xc).addScaledVector(this.sN, yc);
+    if (!this.snap) return true;
+    const { xc: sx, yc: sy } = this.snap;
+    const zc = Math.sqrt(R * R - sx * sx - sy * sy);
+    const wref = site.clone().multiplyScalar(zc).addScaledVector(this.sE, sx).addScaledVector(this.sN, sy);
     this.U.uRelW.value.copy(wref).sub(camF);
     const up = wref.clone().normalize(), east = new THREE.Vector3(0, 1, 0).cross(up).normalize(), north = new THREE.Vector3().crossVectors(up, east);
     this.U.uFrame.value.set(east.x, up.x, north.x, east.y, up.y, north.y, east.z, up.z, north.z);
     return true;
+  }
+
+  // keep only the cells that hold a bush the camera can get near before the next read-back
+  compact(snap) {
+    const b = this.buf, A = this.aBush.array, C = this.aCell.array, lim = (FAR + 3 * BUSH_CELL) ** 2;
+    const ox = snap.x - snap.xc, oy = snap.y - snap.yc;   // camera, relative to the window centre (tangent plane)
+    let n = 0;
+    for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) {
+      const k = (j * G + i) * 4;
+      if (!(b[k + 3] > 0)) continue;
+      const dx = (i - G / 2 + 0.5) * BUSH_CELL - ox, dy = (j - G / 2 + 0.5) * BUSH_CELL - oy;
+      if (dx * dx + dy * dy > lim) continue;
+      A[n * 4] = b[k]; A[n * 4 + 1] = b[k + 1]; A[n * 4 + 2] = b[k + 2]; A[n * 4 + 3] = b[k + 3];
+      C[n * 2] = snap.ic + i - G / 2; C[n * 2 + 1] = snap.jc + j - G / 2;
+      n++;
+    }
+    this.aBush.clearUpdateRanges(); this.aBush.addUpdateRange(0, n * 4); this.aBush.needsUpdate = true;
+    this.aCell.clearUpdateRanges(); this.aCell.addUpdateRange(0, n * 2); this.aCell.needsUpdate = true;
+    this.geo.instanceCount = n; this.snap = snap;
   }
 }

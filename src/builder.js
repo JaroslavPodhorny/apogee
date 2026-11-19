@@ -1,6 +1,7 @@
 // The hangar: drag parts off the shelf onto the rocket. Parts follow the cursor and jump into
 // place when they get close to where they fit.
 import * as THREE from '../vendor/three.module.js';
+import { gfx } from './gfx.js';
 import { PARTS, PART_LIST, CATEGORIES } from './parts.js';
 import { partMesh, setMaterial, studioEnvironment, interstageMesh, fairingHalfMesh } from './meshes.js';
 import {
@@ -48,12 +49,24 @@ export class Builder {
     this.camera = new THREE.PerspectiveCamera(40, 1, 0.1, 2000);
     this.scene.environment = studioEnvironment(renderer); this.scene.environmentIntensity = 0.55;
     this.scene.add(new THREE.HemisphereLight(0xf2f0ea, 0x3a3d44, 0.5));
-    const sun = new THREE.DirectionalLight(0xffffff, 2.3); sun.position.set(30, 60, 40); this.scene.add(sun);
+    const sun = new THREE.DirectionalLight(0xffffff, 2.3); sun.position.set(42, 60, 16); this.scene.add(sun, sun.target);
+    // the key light casts a soft shadow onto the floor (and the boosters onto the core), fitted to the rocket
+    sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
+    this.sun = sun;
     const fill = new THREE.DirectionalLight(0x9fc0ff, 0.5); fill.position.set(-40, 10, -30); this.scene.add(fill);
     this.floor = new THREE.Group();
     this.floor.add(new THREE.GridHelper(400, 200, 0x3a3e45, 0x24272c));
     const pad = new THREE.Mesh(new THREE.CylinderGeometry(7, 7, 0.1, 64), new THREE.MeshBasicMaterial({ color: 0x1f2226 }));
     pad.position.y = -0.06; this.floor.add(pad);
+    // a soft pool of light on the floor round the pad, so the rocket stands somewhere rather than in a void
+    const pool = new THREE.Mesh(new THREE.CircleGeometry(60, 64), new THREE.MeshBasicMaterial({ map: spriteTex((g) => {
+      const r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      r.addColorStop(0, 'rgba(255,255,255,0.075)'); r.addColorStop(0.35, 'rgba(255,255,255,0.03)'); r.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = r; g.fillRect(0, 0, 64, 64);
+    }), transparent: true, depthWrite: false, fog: false }));
+    pool.rotation.x = -Math.PI / 2; pool.position.y = -0.11; pool.renderOrder = -1; this.floor.add(pool);
+    const catcher = new THREE.Mesh(new THREE.PlaneGeometry(240, 240), new THREE.ShadowMaterial({ opacity: 0.42 }));
+    catcher.rotation.x = -Math.PI / 2; catcher.position.y = -0.005; catcher.receiveShadow = true; this.floor.add(catcher);
     this.scene.add(this.floor);
     this.rocketGroup = new THREE.Group(); this.ghostGroup = new THREE.Group(); this.markGroup = new THREE.Group(); this.hoverGroup = new THREE.Group();
     this.scene.add(this.rocketGroup, this.ghostGroup, this.hoverGroup, this.markGroup);
@@ -198,6 +211,22 @@ export class Builder {
     this.shellGroup.clear();
     this.drawShells(this.design.parts, this.layout, this.shellGroup, false);
     this.showShells();
+    this.fitShadow();
+  }
+  // shadows from the rocket and its solid shells, with the light's frustum wrapped tightly round them
+  fitShadow() {
+    const on = gfx.shadows > 0, sun = this.sun;
+    sun.castShadow = on;
+    if (!on) return;
+    const box = new THREE.Box3();
+    for (const g of [this.rocketGroup, this.shellGroup]) g.traverse((m) => { if (m.isMesh && !m.material.transparent) { m.castShadow = m.receiveShadow = true; } });
+    box.setFromObject(this.rocketGroup);
+    if (box.isEmpty()) box.set(new THREE.Vector3(-1, 0, -1), new THREE.Vector3(1, 2, 1));
+    box.min.y = Math.min(box.min.y, 0);
+    const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() * 0.5 + 1;
+    const dir = this.sun.userData.dir ||= this.sun.position.clone().normalize();
+    sun.target.position.copy(c); sun.position.copy(c).addScaledVector(dir, r * 3);
+    const sc = sun.shadow.camera; sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r; sc.near = r; sc.far = r * 5; sc.updateProjectionMatrix();
   }
   // interstages and fairings round the rocket: solid, and a see-through copy shown while you build inside
   drawShells(parts, layout, group, ghostOnly) {
@@ -604,6 +633,7 @@ export class Builder {
     this.camera.lookAt(c.target);
     this.camera.updateMatrixWorld();
     if (this.needPlace) { this.needPlace = false; if (held) this.updatePlacement(); }
+    if (this.sun.castShadow !== gfx.shadows > 0) this.fitShadow();
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.05;
     this.renderer.render(this.scene, this.camera);
   }

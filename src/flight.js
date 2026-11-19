@@ -9,11 +9,11 @@ import { Terrain } from './terrain.js';
 import { cloudNoise, groundDetail } from './clouds.js';
 import { Smoke, plumeMaterial, plumeGeo } from './fx.js';
 import { Scatter } from './scatter.js';
-import { PhysicalBloomPass } from './post.js';
+import { gfx, onGfx } from './gfx.js';
+import { PhysicalBloomPass, outputPass } from './post.js';
 import { Sun } from './sun.js';
 import { EffectComposer } from '../vendor/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '../vendor/jsm/postprocessing/RenderPass.js';
-import { OutputPass } from '../vendor/jsm/postprocessing/OutputPass.js';
 import { PARTS } from './parts.js';
 import { G0, analyze, computeLayout } from './rocket.js';
 import { buildSite } from './site.js';
@@ -74,8 +74,12 @@ export class Flight {
     this.composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4 }));
     this.renderPass = new RenderPass(new THREE.Scene(), new THREE.PerspectiveCamera());
     this.bloom = new PhysicalBloomPass(0.045);
-    this.composer.addPass(this.renderPass); this.composer.addPass(this.bloom); this.composer.addPass(new OutputPass());
+    this.composer.addPass(this.renderPass); this.composer.addPass(this.bloom); this.composer.addPass(outputPass());
     this.pmrem = new THREE.PMREMGenerator(renderer);
+    // The environment (sky light and reflections) is re-rendered from the sky shader every few seconds. three
+    // fixes its cube at 256² a face: the full sky shader over 400k pixels, a dropped frame each time. The sky is
+    // smooth light; 128² holds it as well at a quarter of the cost.
+    { const pm = this.pmrem, set = pm._setSize; if (set) pm._setSize = (n) => set.call(pm, Math.min(n, 128)); }
     this.sizeKey = '';
     this.renderer = renderer; this.cv = canvas; this.thumbs = thumbs; this.onExit = onExit; this.active = false;
     this.keys = new Set();
@@ -96,6 +100,7 @@ export class Flight {
     $('f-warp-up').onclick = () => this.setWarp(1);
     $('f-warp-down').onclick = () => this.setWarp(-1);
     $('f-help-btn').onclick = () => { $('f-help').hidden = !$('f-help').hidden; };
+    onGfx(() => this.applyShadows());
     $('f-data-btn').onclick = () => this.toggleData();
     $('f-stage-btn').onclick = () => this.stage();
     const tr = $('f-throttle');
@@ -183,7 +188,7 @@ export class Flight {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.3, 90000);
     this.sky = makeSkyPlanet(this.tex); this.skyScene = new THREE.Scene(); this.skyScene.add(this.sky);
     this.sunLight = new THREE.DirectionalLight(0xffffff, SUN_E);
-    this.sunLight.castShadow = true; this.sunLight.shadow.mapSize.set(2048, 2048);
+    this.sunLight.castShadow = true; this.sunLight.shadow.mapSize.set(2048, 2048); this.applyShadows();
     this.sunLight.shadow.bias = -0.0004; this.sunLight.shadow.normalBias = 0.04;
     scene.add(this.sunLight, this.sunLight.target);
     this.envT = 1e9; this.envRT = null; this.exposure = 1;
@@ -882,8 +887,9 @@ export class Flight {
       // the ground and sky are drawn from where the camera really is, shake included: otherwise the rumble moves
       // the rocket and the pad but not the ground under them, and the ground seems to slide about
       cp.copy(this.origin).add(cam.position); camAlt = cp.length() - pl.R;
-      this.sky.userData.viewH = Math.max(16, Math.round((this.ph || h) * (cp.length() - pl.R < 15000 / Math.sqrt(pl.atmK) ? (this.resScale >= 0.9 ? 1 : Math.min(1, (this.skyScale || 0.6) + 0.25)) : (this.skyScale || 0.6))));
-      updateSky(this.sky, { camera: cam, camPos: cp, theta, planet: pl, sunDir: this.sunDir, siteFixed: world.siteFixed, time: world.t, volumetric: true });
+      const ss = this.skyRes(cp.length() - pl.R < 15000 / Math.sqrt(pl.atmK));
+      this.sky.userData.viewH = Math.max(16, Math.round((this.ph || h) * ss));
+      updateSky(this.sky, { camera: cam, camPos: cp, theta, planet: pl, sunDir: this.sunDir, siteFixed: world.siteFixed, time: world.t, volumetric: gfx.clouds });
       // site
       const sUp = world.siteDir();
       const sPos = sUp.clone().multiplyScalar(pl.R).sub(this.origin);
@@ -925,6 +931,8 @@ export class Flight {
       const flameK = this.engineLight && this.engineLight.intensity > 0 ? THREE.MathUtils.clamp(1 - this.cam.dist / 500, 0, 1) : 0;
       target = THREE.MathUtils.lerp(target, Math.min(target, 1.35), flameK);
       this.exposure += (target - this.exposure) * (1 - Math.exp(-dt * 2.5));
+      // stars: exposed for a sunlit rocket only the brightest show; with the eye opened up at night, all of them
+      this.sky.material.uniforms.uStarK.value = THREE.MathUtils.lerp(0.3, 1.6, THREE.MathUtils.smoothstep(this.exposure, 1.1, 2.8));
       const sm = this.smoke.mat.uniforms;
       sm.uSunCol.value.set(T.r, T.g, T.b).multiplyScalar(SUN_E);
       const day = THREE.MathUtils.smoothstep(up.dot(this.sunDir), -0.15, 0.3) * Math.max(0.05, 1 - vAlt / pl.atmTop);
@@ -954,10 +962,6 @@ export class Flight {
       this.updateViews();
       this.updatePartLights();
       {
-        // near the ground the planet fills the view and its fine detail needs full resolution (a reduced
-        // buffer turns forest texture into staircases); higher up, sky and limb are soft and half-res is fine
-        const lowCam = cp.length() - pl.R < 15000 / Math.sqrt(pl.atmK);
-        const ss = lowCam ? (this.resScale >= 0.9 ? 1 : Math.min(1, this.skyScale + 0.3)) : this.skyScale;
         const sw = Math.max(16, Math.round(this.pw * ss)), sh = Math.max(16, Math.round(this.ph * ss));
         this.renderTerrain(cam, cp, theta, sw, sh);
         if (!this.skyRT) this.skyRT = new THREE.WebGLRenderTarget(sw, sh, { type: THREE.HalfFloatType, depthBuffer: false });
@@ -968,7 +972,7 @@ export class Flight {
       }
       this.renderPass.scene = this.scene; this.renderPass.camera = cam;
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = this.exposure;
-      this.bloom.enabled = true;
+      this.bloom.enabled = gfx.bloom;
       this.composer.render(dt);
     }
     if (a && !this.paused && world.warp <= 4 && world.vessels.includes(a)) {
@@ -998,7 +1002,8 @@ export class Flight {
     const sd = this.sunDir, sunF = new THREE.Vector3(c * sd.x - s * sd.z, sd.y, s * sd.x + c * sd.z);
     ter.update(camF, rel, fade, sunF);
     const agl = camAlt - ter.groundAt(cp, theta);
-    su.uBush3D.value = ter.bushes && ter.bushes.update(camF, agl) ? 1 : 0;
+    if (ter.bushes && !gfx.bushes) ter.bushes.group.visible = false;
+    su.uBush3D.value = ter.bushes && gfx.bushes && ter.bushes.update(camF, agl) ? 1 : 0;
     ter.gMat.uniforms.uRelToClip.value.copy(rel); ter.gMat.uniforms.uFC.value = 2 / Math.log2(1e9 + 1);
     ter.sceneU.uCamScene.value.copy(cam.position); ter.sceneU.uRotS.value.setFromMatrix4(rotY);
     if (!this.gRT) this.gRT = new THREE.WebGLRenderTarget(sw, sh, { type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: true });
@@ -1026,21 +1031,45 @@ export class Flight {
   }
 
   // Keep the frame rate up on smaller GPUs: scale the render resolution with the measured frame time.
+  // (The resolution and quality options come from the graphics settings, gfx.js.)
   resizePipeline(w, h) {
-    if (this.resScale == null) { this.resScale = 1; this.skyScale = 0.6; this.ftAcc = 0; this.ftN = 0; }
-    const dt = this.lastDt || 0.016;
-    this.ftAcc += Math.min(dt, 0.25); this.ftN++;
-    if (this.ftN >= 45 || (this.ftN >= 4 && this.ftAcc > 1)) {
-      const avg = this.ftAcc / this.ftN; this.ftAcc = 0; this.ftN = 0;
-      if (avg > 1 / 45 && this.resScale > 0.6) this.resScale = Math.max(0.6, this.resScale - 0.1);
-      else if (avg < 1 / 58 && this.resScale < 1) this.resScale = Math.min(1, this.resScale + 0.05);
-      this.skyScale = this.resScale < 0.8 ? 0.5 : 0.6;
-    }
-    const pr = Math.min(window.devicePixelRatio || 1, 1.5) * this.resScale, key = `${w}x${h}@${pr.toFixed(2)}`;
+    if (this.resScale == null) { this.resScale = 1; this.ftAcc = 0; this.ftN = 0; }
+    const dpr = window.devicePixelRatio || 1;
+    let pr;
+    if (gfx.res === 'auto') {
+      const dt = this.lastDt || 0.016;
+      this.ftAcc += Math.min(dt, 0.25); this.ftN++;
+      // a hidden tab gets no frames worth measuring: do not let its stalls drag the resolution down
+      if (document.hidden) { this.ftAcc = 0; this.ftN = 0; }
+      if (this.ftN >= 45 || (this.ftN >= 4 && this.ftAcc > 1)) {
+        const avg = this.ftAcc / this.ftN; this.ftAcc = 0; this.ftN = 0;
+        if (avg > 1 / 45 && this.resScale > 0.6) this.resScale = Math.max(0.6, this.resScale - 0.1);
+        else if (avg < 1 / 58 && this.resScale < 1) this.resScale = Math.min(1, this.resScale + 0.05);
+      }
+      pr = Math.min(dpr, 1.5) * this.resScale;
+    } else { this.resScale = 1; pr = Math.min(dpr, 2) * gfx.res; }
+    pr = Math.max(0.5, pr);
+    const key = `${w}x${h}@${pr.toFixed(2)}/${gfx.msaa}`;
     this.pw = Math.round(w * pr); this.ph = Math.round(h * pr);
     if (key === this.sizeKey) return;
     this.sizeKey = key;
+    for (const rt of [this.composer.renderTarget1, this.composer.renderTarget2]) if (rt.samples !== gfx.msaa) { rt.samples = gfx.msaa; rt.dispose(); }
     this.composer.setPixelRatio(pr); this.composer.setSize(w, h);
+  }
+  // Resolution of the sky / ground pass relative to the view. Near the ground the planet fills the view and its
+  // fine detail needs (nearly) full resolution: a reduced buffer turns forest texture into staircases. Higher up,
+  // sky and limb are soft and a reduced buffer is fine. Drops a step when the frame rate forces the view down.
+  skyRes(lowCam) {
+    const base = gfx.sky * (this.resScale < 0.8 ? 0.85 : 1);
+    return lowCam ? Math.min(1, base + (this.resScale >= 0.9 ? 0.4 : 0.3)) : base;
+  }
+  applyShadows() {
+    const L = this.sunLight; if (!L) return;
+    L.castShadow = gfx.shadows > 0;
+    if (gfx.shadows > 0 && L.shadow.mapSize.x !== gfx.shadows) {
+      L.shadow.mapSize.set(gfx.shadows, gfx.shadows);
+      if (L.shadow.map) { L.shadow.map.dispose(); L.shadow.map = null; }
+    }
   }
 
   orbitPoint(o, nu, out) {

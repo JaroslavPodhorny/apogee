@@ -5,6 +5,7 @@
 // glare, a lamp a soft round glow, a white wall nothing you would notice. No squares, no thresholds.
 import * as THREE from '../vendor/three.module.js';
 import { Pass, FullScreenQuad } from '../vendor/jsm/postprocessing/Pass.js';
+import { OutputPass } from '../vendor/jsm/postprocessing/OutputPass.js';
 
 const VERT = 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
 
@@ -77,4 +78,23 @@ export class PhysicalBloomPass extends Pass {
     renderer.autoClear = ac;
   }
   dispose() { for (const m of this.mips) m.dispose(); this.quad.dispose(); }
+}
+
+// The final pass (tone mapping, sRGB) with two touches of a real camera:
+// · a gentle vignette, the light falloff of a lens towards the corners of the frame (in linear light, before the
+//   tone curve, so bright corners stay bright and it never reads as a grey frame laid on top);
+// · dither: the frame is HDR until here, then quantised to 8 bits; dark sky gradients and the haze over the limb
+//   would band into steps. Half a step of triangular noise breaks them up and is invisible itself.
+export function outputPass() {
+  const p = new OutputPass();
+  p.material.fragmentShader = p.material.fragmentShader
+    .replace('gl_FragColor = texture2D( tDiffuse, vUv );', `gl_FragColor = texture2D( tDiffuse, vUv );
+      vec2 vq = (vUv - 0.5) * 1.4142;
+      gl_FragColor.rgb *= 1.0 - 0.13 * pow(dot(vq, vq), 1.5);`)
+    .replace(/(#ifdef SRGB_TRANSFER[\s\S]*?#endif)/, `$1
+      vec2 dq = gl_FragCoord.xy;
+      float n1 = fract(52.9829189 * fract(dot(dq, vec2(0.06711056, 0.00583715))));
+      float n2 = fract(sin(dot(dq, vec2(12.9898, 78.233))) * 43758.5453);
+      gl_FragColor.rgb += (n1 - n2) / 255.0;`);
+  return p;
 }

@@ -814,13 +814,20 @@ export class World {
   update(dtReal) {
     const a = this.active;
     if (this.warp > 4 && !this.canRails()) { this.warp = a && a.alt < this.planet.atmTop ? Math.min(this.warp, 4) : 1; this.emit('warn', 'Time warp limited: engines firing or inside atmosphere'); }
+    // Fixed 10 ms physics steps, as many as the real time since the last frame calls for: the flight runs at the
+    // same speed and follows the same path at 20 fps as at 120. Only a long stall (a hidden tab, a hitch) is cut
+    // short, and if the computer cannot keep up with the steps at all, the game slows down instead of freezing.
+    const dtr = Math.min(dtReal, 0.25);
     if (this.warp <= 4) {
-      this.acc += Math.min(dtReal, 0.05) * this.warp;
+      this.acc += dtr * this.warp;
+      const t0 = performance.now();
       let n = 0;
-      while (this.acc >= this.h && n < 40) { this.stepPhysics(this.h); this.acc -= this.h; n++; }
-      if (n === 40) this.acc = 0;
+      while (this.acc >= this.h) {
+        this.stepPhysics(this.h); this.acc -= this.h; n++;
+        if ((n & 7) === 0 && performance.now() - t0 > 40) { this.acc = 0; break; }
+      }
     } else {
-      let total = Math.min(dtReal, 0.05) * this.warp;
+      let total = dtr * this.warp;
       const hmax = this.warp > 1000 ? 8 : 2;
       while (total > 1e-9) {
         const dt = Math.min(hmax, total); total -= dt;

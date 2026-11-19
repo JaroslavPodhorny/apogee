@@ -104,7 +104,7 @@ ${TERRAIN_CORE}
 ${BUSH_GLSL}
 varying vec3 vDir;
 uniform vec3 uCamPos, uSun, uSunF, uCamRel, uSite, uCamF, uCamSite;
-uniform float uCG, uCA, uCC, uRa, uRc, uRot, uPix, uEnv, uCamAlt, uSunDisc;
+uniform float uCG, uCA, uCC, uRa, uRc, uRot, uPix, uEnv, uCamAlt, uSunDisc, uStarK;
 uniform sampler2D tTer;          // terrain G-buffer: distance, height, normal (east, north)
 uniform float uTerOn, uTerK;
 uniform float uBush3D;
@@ -126,7 +126,8 @@ vec3 stars(vec3 d) {
     if (h > (L == 0 ? 0.955 : 0.975)) {
       vec3 c = (vec3(i) + 0.5 + (vec3(hash3(i + 3), hash3(i + 5), hash3(i + 9)) - 0.5) * 0.7) / sc;
       float w = max(uPix * 0.9, 1e-4), dd = length(normalize(c) - d) / w;
-      float b = pow(hash3(i + 13), 10.0) * 3.0 + 0.05;
+      // a power law like the real sky: a handful of bright stars, thousands only just above the dark
+      float b = 0.006 / (1.0 - 0.998 * hash3(i + 13));
       float tmp = hash3(i + 21);
       vec3 sc2 = tmp < 0.2 ? vec3(0.65, 0.78, 1.0) : tmp > 0.85 ? vec3(1.0, 0.8, 0.6) : vec3(1.0, 0.97, 0.92);
       col += sc2 * b * exp(-dd * dd);
@@ -136,13 +137,14 @@ vec3 stars(vec3 d) {
   float band = exp(-pow(dot(d, mwN) / 0.16, 2.0));
   float m = fbm(d * 7.0, 5), dust = smoothstep(0.45, 0.7, fbm(d * 13.0 + 4.0, 4));
   col += vec3(0.75, 0.8, 1.0) * band * (0.012 + 0.05 * m * m) * (1.0 - 0.7 * dust * band);
-  return col;
+  // the eye (or camera) adapted to sunlight sees only the brightest; dark-adapted, all of them
+  return col * uStarK;
 }
 
 // ---------- volumetric clouds: a real layer of cumulus near the camera ----------
 uniform highp sampler3D tNoise;
 uniform vec3 uCloudRel;          // camera position in the fixed frame (plus wind drift), wrapped to 36 km
-uniform float uVolK, uVolMax, uCB, uCT, uRb, uRt, uFrame;
+uniform float uVolK, uVolMax, uCB, uCT, uRb, uRt, uFrame, uNoiseOn;
 // over the launch site the weather is always fair: scattered cumulus, never overcast, never empty
 float siteCov(float cov, vec3 nF) {
   float s = 1.0 - smoothstep(9000.0 / uK, 30000.0 / uK, length(nF - uSite) * uR);
@@ -218,6 +220,20 @@ vec4 marchClouds(vec3 d, vec3 dF, vec3 cF, float b, float tEnd, float muV, out f
   }
   if (ws > 1e-3) tW = ts / ws;
   return vec4(L, T);
+}
+// The cloud layer drawn as a sheet, but with the volume's own shapes: the same coverage and the same noise at the
+// same place, so clouds keep their outlines when the camera climbs out of the volumetric range or looks past it.
+// Returns cover (x) and how much of the cloud lies toward the sun (y, shades the far sides for some relief).
+vec2 shellVol(vec3 loc, float cov, float foot) {
+  gFoot = max(1.0, foot * 1.5);
+  float sh = textureLod(tNoise, loc * (1.0 / 9000.0), nLod(9000.0)).r, sh2 = textureLod(tNoise, loc * (1.0 / 2250.0) + 0.53, nLod(2250.0)).r;
+  float c = cov * 1.15 + (sh - 0.5) * 0.7 + (sh2 - 0.5) * 0.35;
+  float dd = smoothstep(0.4, 0.62, c);
+  float det = textureLod(tNoise, loc * (1.0 / 1125.0) + 0.37, nLod(1125.0)).g;
+  dd = clamp((dd - (1.0 - det) * 0.45 * (1.0 - 0.6 * dd)) * 1.8, 0.0, 1.0);
+  vec3 ls = loc + normalize(uSunF - normalize(uCamF) * dot(uSunF, normalize(uCamF))) * 700.0;
+  float cs = cov * 1.15 + (textureLod(tNoise, ls * (1.0 / 9000.0), nLod(9000.0)).r - 0.5) * 0.7 + (textureLod(tNoise, ls * (1.0 / 2250.0) + 0.53, nLod(2250.0)).r - 0.5) * 0.35;
+  return vec2(smoothstep(0.0, 0.45, dd), smoothstep(0.4, 0.62, cs));
 }
 
 // fields: a jittered grid of cells (Voronoi). Returns the distance to the nearest cell border (in cell
@@ -1041,6 +1057,10 @@ void main() {
     vec2 cw = vec2(vnoise(cnF * 780.0, 0), vnoise(cnF * 780.0 + 17.3, 0)) - 0.5;
     vec4 cd = textureGrad(tData, uvC + cw * (2.2 / 8192.0), cx, cy);
     float a = cloudAlpha(siteCov(cd.r, cnF), cnF, 1.0, tC * uPix);
+    // near: the volume's shapes (the noise repeats every few tens of km, so far off the map's own clouds take over)
+    float nearK = uNoiseOn > 0.5 ? 1.0 - smoothstep(uVolMax * 1.5, uVolMax * 3.5, tC) : 0.0;
+    vec2 sv = vec2(0.0);
+    if (nearK > 0.0) { sv = shellVol(uCloudRel + dF * tC, cloudCov(cnF), tC * uPix); a = mix(a, sv.x, nearK); }
     a *= smoothstep(0.0, 0.02, abs(dot(d, normalize(uCamPos + d * tC))));    // fade at grazing angles through the shell
     a *= mix(1.0, smoothstep(uVolMax * 0.7, uVolMax, tC), uVolK);              // the volume draws the near part
     if (a > 0.003) {
@@ -1048,6 +1068,9 @@ void main() {
       float muC = dot(cn, uSun);
       vec3 Tc = sunT(uRc - uR, muC);
       float self = cloudAlpha(textureLod(tData, lonlat(normalize(cnF + uSunF * 0.004)), 2.0).r, cnF + uSunF * 0.004, 1.0, 1e9);
+      // near: shade the sides turned from the sun, and let thin edges show less bright top
+      self = mix(self, sv.y * 0.9, nearK);
+      a *= mix(1.0, 0.85 + 0.15 * sv.x, nearK);
       float below = uCC < 0.0 ? 1.0 : 0.0;
       float lit = (0.35 + 0.65 * max(muC, 0.0)) * (1.0 - 0.45 * self) * mix(1.0, 0.32 + 0.3 * (1.0 - a), below);
       float silver = pow(max(muV, 0.0), 12.0) * (1.0 - a) * 2.5;
@@ -1074,11 +1097,11 @@ function skyUniforms(tex) {
     uCamPos: { value: new THREE.Vector3() }, uCamF: { value: new THREE.Vector3() }, uCamSite: { value: new THREE.Vector3() }, uCamRot: { value: new THREE.Matrix3() }, uTan: { value: 1 }, uAspect: { value: 1 },
     uSun: { value: new THREE.Vector3(1, 0, 0) }, uSunF: { value: new THREE.Vector3(1, 0, 0) }, uCamRel: { value: new THREE.Vector3() }, uSite: { value: new THREE.Vector3(1, 0, 0) },
     uCG: { value: 1 }, uCA: { value: 1 }, uCC: { value: 1 }, uR: { value: 1 }, uRa: { value: 1 }, uRc: { value: 1 }, uHr: { value: 8000 }, uHm: { value: 1200 }, uK: { value: 1 },
-    uE: { value: SUN_E }, uLon0: { value: LON0 }, uRot: { value: 0 }, uTime: { value: 0 }, uPix: { value: 0.001 }, uEnv: { value: 0 }, uCamAlt: { value: 0 }, uSunDisc: { value: 1 },
+    uE: { value: SUN_E }, uLon0: { value: LON0 }, uRot: { value: 0 }, uTime: { value: 0 }, uPix: { value: 0.001 }, uEnv: { value: 0 }, uCamAlt: { value: 0 }, uSunDisc: { value: 1 }, uStarK: { value: 1 },
     tTer: { value: null }, uBush3D: { value: 0 }, uCrater: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) }, uCraterN: { value: 0 }, uFlashP: { value: new THREE.Vector4() }, uFlashC: { value: new THREE.Vector3() }, uTerOn: { value: 0 }, uTerK: { value: 0 }, uTA: { value: 1 },
     tLand: { value: null }, tCtl: { value: null }, uTR: { value: 1 }, uTLon0: { value: TLON0 }, uTSite: { value: new THREE.Vector3(1, 0, 0) },
     tGround: { value: null }, uGBig: { value: new THREE.Vector2() }, uGSmall: { value: new THREE.Vector2() }, uGE: { value: new THREE.Vector3(0, 0, -1) }, uGN: { value: new THREE.Vector3(0, 1, 0) },
-    tNoise: { value: null }, uCloudRel: { value: new THREE.Vector3() }, uFrame: { value: 0 }, uVolK: { value: 0 }, uVolMax: { value: 30000 }, uCB: { value: 1 }, uCT: { value: 1 }, uRb: { value: 1 }, uRt: { value: 1 },
+    tNoise: { value: null }, uNoiseOn: { value: 0 }, uCloudRel: { value: new THREE.Vector3() }, uFrame: { value: 0 }, uVolK: { value: 0 }, uVolMax: { value: 30000 }, uCB: { value: 1 }, uCT: { value: 1 }, uRb: { value: 1 }, uRt: { value: 1 },
   };
 }
 
@@ -1117,7 +1140,9 @@ export function updateSky(sky, { camera, camPos, theta, planet, sunDir, siteFixe
   const Rb = R + 4600 / k, Rt = R + 7000 / k;
   u.uRb.value = Rb; u.uRt.value = Rt; u.uCB.value = c2 - Rb * Rb; u.uCT.value = c2 - Rt * Rt;
   u.uVolMax.value = 45000 / Math.sqrt(k);
-  u.uVolK.value = volumetric && u.tNoise.value ? 1 - THREE.MathUtils.smoothstep(Math.sqrt(c2) - Rt, 9000 / Math.sqrt(k), 16000 / Math.sqrt(k)) : 0;
+  // the volume hands over to the sheet over a long climb; the sheet near the camera keeps the volume's shapes
+  u.uVolK.value = volumetric && u.tNoise.value ? 1 - THREE.MathUtils.smoothstep(Math.sqrt(c2) - Rt, 12000 / Math.sqrt(k), 26000 / Math.sqrt(k)) : 0;
+  u.uNoiseOn.value = u.tNoise.value ? 1 : 0;
   u.uR.value = R; u.uTR.value = R; u.uTA.value = 1 / Math.sqrt(k); u.uRa.value = Ra; u.uRc.value = Rc; u.uHr.value = 8000 / k; u.uHm.value = 1200 / k; u.uK.value = k;
   u.uRot.value = theta; u.uTime.value = time; u.uCamAlt.value = Math.sqrt(c2) - R;
   u.uSun.value.copy(sunDir);

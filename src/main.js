@@ -8,6 +8,10 @@ import { Flight } from './flight.js';
 import { stockRockets } from './stock.js';
 import { cloneDesign } from './rocket.js';
 import { startAutopilot } from './autopilot.js';
+import { gfx, toggleGfxPanel, tickFps } from './gfx.js';
+import { EffectComposer } from '../vendor/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from '../vendor/jsm/postprocessing/RenderPass.js';
+import { outputPass } from './post.js';
 import { universes, currentUniverse, setCurrentUniverse, createUniverse, deleteUniverse, worldSummary } from './universe.js';
 
 const $ = (id) => document.getElementById(id);
@@ -27,6 +31,11 @@ const builder = new Builder(renderer, canvas, thumbs, (design, kind) => { flight
 const WORLDS = { compact: 'Planet: small, best to start', real: 'Planet: real-size Earth, hard' };
 const menuScene = new THREE.Scene(), menuSky = makeSkyPlanet(tex), menuCam = new THREE.PerspectiveCamera(50, 1, 1, 10);
 menuScene.add(menuSky);
+// The title view is one full-screen pass of the atmosphere shader. At device resolution on a retina screen that is
+// millions of heavy pixels for a soft view from orbit: render it in HDR at a capped resolution, then tone map.
+const titleComp = new EffectComposer(renderer, new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }));
+titleComp.addPass(new RenderPass(menuScene, menuCam)); titleComp.addPass(outputPass());
+let titleKey = '';
 const titlePlanet = { R: 6371000, atmK: 1 };
 function renderTitle(t, w, h) {
   const R = titlePlanet.R, alt = 420000, ang = 2.1 + t * 0.004;
@@ -37,10 +46,12 @@ function renderTitle(t, w, h) {
   menuCam.position.set(0, 0, 0); menuCam.up.copy(up); menuCam.lookAt(fwd.clone().addScaledVector(up, -0.42)); menuCam.updateMatrixWorld();
   const right = new THREE.Vector3().crossVectors(fwd, up);
   const sun = right.multiplyScalar(0.75).addScaledVector(fwd, 0.55).addScaledVector(up, 0.12).normalize();
-  menuSky.userData.viewH = h;
+  const dpr = window.devicePixelRatio || 1, pr = gfx.preset === 'ultra' ? Math.min(dpr, 2) : gfx.preset === 'low' ? 1 : Math.min(dpr, 1.25);
+  if (titleKey !== `${w}x${h}@${pr}`) { titleKey = `${w}x${h}@${pr}`; titleComp.setPixelRatio(pr); titleComp.setSize(w, h); }
+  menuSky.userData.viewH = h; menuSky.material.uniforms.uStarK.value = 1.4;
   updateSky(menuSky, { camera: menuCam, camPos: cp, theta: 0, planet: titlePlanet, sunDir: sun, time: t * 30 });
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15;
-  renderer.render(menuScene, menuCam);
+  titleComp.render();
 }
 function showTitle() {
   $('t-world').textContent = WORLDS[worldKind()];
@@ -76,6 +87,7 @@ $('t-world').onclick = () => { localStorage.setItem('apogee.world', worldKind() 
 const sndBtns = [...document.querySelectorAll('.snd')];
 const showSnd = () => sndBtns.forEach((b) => { b.textContent = b.id === 't-sound' ? `Sound: ${sfx.muted ? 'off' : 'on'}` : sfx.muted ? 'Sound off' : 'Sound'; });
 sndBtns.forEach((b) => { b.onclick = () => { sfx.setMuted(!sfx.muted); showSnd(); }; }); showSnd();
+for (const b of document.querySelectorAll('.gfx-btn')) b.onclick = () => toggleGfxPanel();
 for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, () => sfx.init(), true);
 
 function setMode(m) {
@@ -95,8 +107,9 @@ window.apogee = { builder, flight, setMode, menuSky, tex, get mode() { return mo
 document.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('button, .item'); if (b) { if (b.blur) b.blur(); if (b.id !== 'f-stage-btn') sfx.play('click'); } });
 let last = performance.now(), clock = 0;
 function loop(now) {
-  const dt = Math.min(0.1, (now - last) / 1000); last = now; clock += dt;
+  const dt = Math.min(0.25, (now - last) / 1000); last = now; clock += dt;
   const w = window.innerWidth, h = window.innerHeight;
+  tickFps(dt);
   try {
     if (mode === 'build') builder.render(w, h); else if (mode === 'flight') flight.frame(dt, w, h); else renderTitle(clock, w, h);
   } catch (err) { console.error(err); }
