@@ -970,3 +970,42 @@ export function renderThumbnails() {
   renderer.dispose(); renderer.forceContextLoss();
   return out;
 }
+
+// ---------- frost on cryogenic steel tanks ----------
+// Propellant at −180 °C chills a bare steel tank so much that the air's moisture freezes onto it: white frost
+// covers the tank from the bottom up to the liquid level (the frost line), thicker in streaks where condensate
+// runs down. As the propellant burns away the line drops and the polished steel shows again; above the air the
+// frost slowly sublimates. Applied per tank (each has its own level), on top of the steel's own material.
+export function frostMaterial(base, r, half) {
+  const m = base.clone();
+  const U = { uFill: { value: 1 }, uFrost: { value: 0 }, uR: { value: r }, uHalf: { value: half } };
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, U);
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vFP;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFP = position;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>
+      varying vec3 vFP; uniform float uFill, uFrost, uR, uHalf;
+      float fh(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float fn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(fh(i), fh(i + vec2(1, 0)), f.x), mix(fh(i + vec2(0, 1)), fh(i + vec2(1, 1)), f.x), f.y); }
+      float frostF = 0.0;`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+      {
+        float u = atan(vFP.z, vFP.x) * uR;                              // metres round the tank
+        float line = -uHalf + 2.0 * uHalf * uFill;
+        float edge = line + (fn(vec2(u * 0.9, vFP.y * 0.3)) - 0.5) * 0.7 + (fn(vec2(u * 4.0, 0.5)) - 0.5) * 0.25;
+        float below = smoothstep(edge + 0.12, edge - 0.3, vFP.y);
+        // streaks: thick runs of frost down the tank, thinner film between them, fine crystal grain
+        float streak = smoothstep(0.3, 0.7, fn(vec2(u * 3.0, vFP.y * 0.1)) * 0.6 + fn(vec2(u * 9.0, vFP.y * 0.35)) * 0.4);
+        float grain = fn(vec2(u * 40.0, vFP.y * 40.0));
+        // thick white runs where condensate streams down; a thin film between them that lets the steel glint through
+        frostF = below * uFrost * (0.3 + 0.7 * streak) * (0.88 + 0.12 * grain);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.9, 0.93, 0.97) * (0.92 + 0.08 * grain), frostF);
+      }`)
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, 0.85, frostF);')
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = mix(metalnessFactor, 0.0, frostF);');
+  };
+  m.customProgramCacheKey = () => 'apogee-frost';
+  m.userData.frost = U;
+  return m;
+}

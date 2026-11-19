@@ -3,7 +3,7 @@ import * as THREE from '../vendor/three.module.js';
 import { World, orbitElements, cloudTop } from './sim.js';
 import { Booms } from './boom.js';
 import { currentUniverse, loadWorld, saveWorld } from './universe.js';
-import { partMesh, lightMats, interstageMesh, fairingHalfMesh } from './meshes.js';
+import { partMesh, lightMats, interstageMesh, fairingHalfMesh, frostMaterial, MAT } from './meshes.js';
 import { makeSkyPlanet, makeMapPlanet, updateSky, sunTransmittance, SUN_E } from './planet.js';
 import { Terrain } from './terrain.js';
 import { cloudNoise, groundDetail } from './clouds.js';
@@ -371,6 +371,12 @@ export class Flight {
             if (p.inter) m.add(interstageMesh(p.inter));
             if (p.fair && !p.fairGone) { const f = new THREE.Group(); f.add(fairingHalfMesh(p.fair.prof, 0), fairingHalfMesh(p.fair.prof, 1)); m.add(f); m.userData.fairMesh = f; }
             m.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+            // bare steel propellant tanks frost over where the cryogenic liquid is (each tank its own copy)
+            if (p.def.shape === 'steeltank' && p.def.fuel?.liquid) {
+              let fm = null;
+              m.traverse((o) => { if (o.isMesh && o.material === MAT.stainless) { fm ||= frostMaterial(MAT.stainless, p.def.r, p.def.len / 2); o.material = fm; } });
+              if (fm) { m.userData.frost = fm.userData.frost; m.userData.frostK = v.launched ? 0 : 1; }
+            }
             if (p.def.engine) {
               const E = p.def.engine, solid = E.fuelType === 'solid';
               const mats = plumeMaterial(solid, E.chem ?? 0), pm = new THREE.Mesh(plumeGeo, mats.flame);
@@ -452,6 +458,16 @@ export class Flight {
           }
         }
         if (p.def.deploy) m.scale.x = 0.07 + 0.93 * THREE.MathUtils.smoothstep(p.deployK, 0, 1);
+        if (m.userData.frost) {
+          // frost forms in moist air while the tank is cold, sublimates slowly in vacuum, burns off in re-entry heat
+          const fill = p.liquid / p.def.fuel.liquid, dtv = this.simDt;
+          let k = m.userData.frostK;
+          if (fill > 0.01 && pr > 0.02) k = Math.min(1, k + dtv / 20);
+          else k = Math.max(0, k - dtv * (pr > 0.02 ? 1 / 60 : 1 / 150));
+          if (v.heatFlux > 1e5) k = Math.max(0, k - dtv * 0.5);
+          m.userData.frostK = k;
+          m.userData.frost.uFill.value = fill; m.userData.frost.uFrost.value = k;
+        }
         if (p.chuteOpen > 0) {
           let c = view.chutes.get(p.id);
           if (!c) {
