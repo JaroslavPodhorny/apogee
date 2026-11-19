@@ -138,9 +138,10 @@ export class Smoke {
     for (let i = 0; i < n; i++) {
       const k = (i + 1) / n;
       pos.copy(t.last).addScaledVector(seg, k).addScaledVector(down, o.size0 * 0.3 + (o.offset || 0));
+      pos.add(j.randomDirection().multiplyScalar(o.size0 * (0.25 + 0.35 * Math.random())));   // a ragged column, not a stack of discs
       vel.copy(air).addScaledVector(down, o.push * (0.75 + Math.random() * 0.5)).add(j.randomDirection().multiplyScalar(o.push * 0.12));
       if (o.carry) { pos.addScaledVector(o.carry, (1 - k) * dt); vel.add(o.carry); }   // leaves the flame still moving with the rocket
-      const id = this.emit(pos, vel, o.size0, o.size1 * (0.8 + Math.random() * 0.4), o.life * (0.75 + Math.random() * 0.5), 0.5, nozzle, o.opacity);
+      const id = this.emit(pos, vel, o.size0 * (0.8 + Math.random() * 0.4), o.size1 * (0.75 + Math.random() * 0.5), o.life * (0.75 + Math.random() * 0.5), o.heat ?? 0.5, nozzle, o.opacity * (0.75 + Math.random() * 0.25));
       if (o.carry) this.f[id * 10 + 9] = 1;
     }
     t.last.copy(nozzle);
@@ -180,15 +181,23 @@ export class Smoke {
       }
       const x = p[k], y = p[k + 1], z = p[k + 2];
       const r = Math.sqrt(x * x + y * y + z * z), ux = x / r, uy = y / r, uz = z / r;
-      const ax = om * z, az = -om * x; // the air turns with the planet
+      // the air turns with the planet, and blows: a breeze that strengthens and veers with height (wind shear),
+      // so a climbing rocket's trail bends and drifts; plus slow turbulent eddies so the column is never straight
+      const alt = r - R, ex0 = uz, ez0 = -ux, el = Math.hypot(ex0, ez0) || 1, ex = ex0 / el, ez = ez0 / el;      // east = Y × up
+      const nx = uy * ez, ny = uz * ex - ux * ez, nz = -uy * ex;                                                   // north = up × east
+      const ws = 3 + 9 * (1 - Math.exp(-Math.max(0, alt) / 2500)), wa = 0.6 + alt / 4000;
+      const se = f[j + 5] * 40, tt = f[j];
+      const tb = 1.6 * Math.min(1, tt * 0.5);
+      const we = ws * Math.cos(wa) + tb * Math.sin(tt * 0.9 + se), wn = ws * Math.sin(wa) + tb * Math.sin(tt * 0.7 + se * 1.7), wu = tb * 0.5 * Math.sin(tt * 1.1 + se * 2.3);
+      const ax = om * z + ex * we + nx * wn + ux * wu, ay = ny * wn + uy * wu, az = -om * x + ez * we + nz * wn + uz * wu;
       const dk = f[j + 9] > 0 ? 1 - Math.exp(-dt * (0.9 + 6 * Math.exp(-f[j] * 3))) : damp;   // jet-carried exhaust brakes hard at first
-      v[k] += (ax - v[k]) * dk; v[k + 1] += (0 - v[k + 1]) * dk; v[k + 2] += (az - v[k + 2]) * dk;
+      v[k] += (ax - v[k]) * dk; v[k + 1] += (ay - v[k + 1]) * dk; v[k + 2] += (az - v[k + 2]) * dk;
       const lift = (0.8 + 3.2 * f[j + 8]) * dt * Math.exp(-f[j] * (f[j + 8] > 0 ? 0.12 : 0.08));
       v[k] += ux * lift; v[k + 1] += uy * lift; v[k + 2] += uz * lift;
       // reaching the ground: turn downward motion into a spread outward from where it was emitted
       const size = f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-f[j] * 1.6)) + f[j] * 0.35;
       if (r - R < size * 0.3) {
-        const rx = v[k] - ax, ry = v[k + 1], rz = v[k + 2] - az, vr = rx * ux + ry * uy + rz * uz;
+        const rx = v[k] - ax, ry = v[k + 1] - ay, rz = v[k + 2] - az, vr = rx * ux + ry * uy + rz * uz;
         if (vr < 0) {
           let hx = x - e[k], hy = y - e[k + 1], hz = z - e[k + 2];
           const hr = hx * ux + hy * uy + hz * uz; hx -= ux * hr; hy -= uy * hr; hz -= uz * hr; // keep it horizontal
