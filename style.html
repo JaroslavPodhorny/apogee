@@ -41,7 +41,7 @@
 </div>
 <script type="module">
 import * as THREE from './vendor/three.module.js';
-import { PALETTE, RECIPE_NAMES, recipe, prepareWorldSurface } from './src/style.js';
+import { PALETTE, RECIPE_NAMES, recipe, prepareWorldSurface, applyTone, TONE } from './src/style.js';
 import { MAT, materialNames, partMesh, studioEnvironment } from './src/meshes.js';
 import { siteMaterials } from './src/site.js';
 import { PARTS } from './src/parts.js';
@@ -59,7 +59,7 @@ const view = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
+applyTone(renderer, 1);
 view.prepend(renderer.domElement);
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0x16181b);
 const cam = new THREE.PerspectiveCamera(32, 1, 0.1, 400);
@@ -112,9 +112,9 @@ row('Parts', 10, partIds.map((id) => { const m = partMesh(PARTS[id]); const b = 
 function light(l) {
   for (const b of document.querySelectorAll('#controls [data-l]')) b.classList.toggle('on', b.dataset.l === l);
   scene.environment = env;
-  if (l === 'day') { sun.position.set(30, 60, 25); sun.color.setRGB(1, 0.97, 0.92); sun.intensity = 3.2; scene.environmentIntensity = 0.45; hemi.intensity = 0.5; renderer.toneMappingExposure = 1.0; }
-  if (l === 'low') { sun.position.set(60, 12, 30); sun.color.setRGB(1, 0.72, 0.45); sun.intensity = 3.4; scene.environmentIntensity = 0.25; hemi.intensity = 0.3; renderer.toneMappingExposure = 1.15; }
-  if (l === 'studio') { sun.position.set(30, 60, 40); sun.color.setRGB(1, 1, 1); sun.intensity = 2.3; scene.environmentIntensity = 0.7; hemi.intensity = 0.5; renderer.toneMappingExposure = 1.05; }
+  if (l === 'day') { sun.position.set(30, 60, 25); sun.color.setRGB(1, 0.97, 0.92); sun.intensity = 3.2; scene.environmentIntensity = 0.45; hemi.intensity = 0.5; applyTone(renderer, 1.0); }
+  if (l === 'low') { sun.position.set(60, 12, 30); sun.color.setRGB(1, 0.72, 0.45); sun.intensity = 3.4; scene.environmentIntensity = 0.25; hemi.intensity = 0.3; applyTone(renderer, 1.15); }
+  if (l === 'studio') { sun.position.set(30, 60, 40); sun.color.setRGB(1, 1, 1); sun.intensity = 2.3; scene.environmentIntensity = 0.7; hemi.intensity = 0.5; applyTone(renderer, 1.05); }
 }
 for (const b of document.querySelectorAll('#controls [data-l]')) b.onclick = () => light(b.dataset.l);
 light('day');

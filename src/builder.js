@@ -2,6 +2,7 @@
 // place when they get close to where they fit.
 import * as THREE from '../vendor/three.module.js';
 import { gfx } from './gfx.js';
+import { applyTone } from './style.js';
 import { PARTS, PART_LIST, CATEGORIES } from './parts.js';
 import { partMesh, setMaterial, studioEnvironment, interstageMesh, fairingHalfMesh } from './meshes.js';
 import {
@@ -634,7 +635,7 @@ export class Builder {
     this.camera.updateMatrixWorld();
     if (this.needPlace) { this.needPlace = false; if (held) this.updatePlacement(); }
     if (this.sun.castShadow !== gfx.shadows > 0) this.fitShadow();
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.05;
+    applyTone(this.renderer, 1.35);     // a bright studio: white paint should read white
     this.renderer.render(this.scene, this.camera);
   }
 }

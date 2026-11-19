@@ -10,6 +10,7 @@ import { cloudNoise, groundDetail } from './clouds.js';
 import { Smoke, Sparks, plumeMaterial, plumeGeo, fireballGeo, fireballMaterial, plasmaGeo, plasmaCapGeo, plasmaMaterials, vaporGeo, vaporMaterial } from './fx.js';
 import { Scatter } from './scatter.js';
 import { gfx, onGfx } from './gfx.js';
+import { applyTone } from './style.js';
 import { PhysicalBloomPass, outputPass } from './post.js';
 import { Sun } from './sun.js';
 import { EffectComposer } from '../vendor/jsm/postprocessing/EffectComposer.js';
@@ -1063,7 +1064,7 @@ export class Flight {
         this.scene.background = this.resolveSky(cam, sw, sh, this.pw, this.ph);
       }
       this.renderPass.scene = this.scene; this.renderPass.camera = cam;
-      this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = this.exposure;
+      applyTone(this.renderer, this.exposure);
       this.bloom.enabled = gfx.bloom;
       this.composer.render(dt);
     }
@@ -1218,7 +1219,7 @@ export class Flight {
       if (v) this.label(key, `${v === this.target ? '◇ ' : ''}${v.name}`, v.r.clone().multiplyScalar(0.001), '#ffffff', w, h); else if (this.labels[key]) this.labels[key].style.display = 'none';
     }
     this.renderPass.scene = this.mapScene; this.renderPass.camera = cam;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.1;
+    applyTone(this.renderer, 1.1);
     this.composer.render();
   }
 

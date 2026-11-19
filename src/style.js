@@ -45,6 +45,14 @@ export const PALETTE = {
   // weathering: one dust, one rust, one soot, so everything gets dirty the same way
   grime: '#6f665b', rust: '#7c4a2e', soot: '#1f1d1b', primer: '#9a9890',
 };
+// ---------- the camera's tone curve ----------
+// One decision for every view (title, hangar, flight, map, thumbnails). AgX rolls highlights off the way film and
+// camera sensors do: bright cloud, smoke and white paint keep their shading instead of clipping to flat white,
+// and saturated colours drift toward white as they brighten instead of turning neon. `exposure(e)` scales each
+// view's own exposure to the curve's mid-grey.
+export const TONE = { mapping: THREE.AgXToneMapping, k: 1.15 };
+export const applyTone = (renderer, e) => { renderer.toneMapping = TONE.mapping; renderer.toneMappingExposure = e * TONE.k; };
+
 export const col = (name) => new THREE.Color(PALETTE[name]);
 // a palette colour as sRGB 0..1 components (what a texture stores)
 export const srgb = (name) => { const h = parseInt(PALETTE[name].slice(1), 16); return [(h >> 16) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255]; };

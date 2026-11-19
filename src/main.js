@@ -12,6 +12,7 @@ import { gfx, toggleGfxPanel, tickFps } from './gfx.js';
 import { EffectComposer } from '../vendor/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '../vendor/jsm/postprocessing/RenderPass.js';
 import { outputPass } from './post.js';
+import { applyTone } from './style.js';
 import { universes, currentUniverse, setCurrentUniverse, createUniverse, deleteUniverse, worldSummary } from './universe.js';
 
 const $ = (id) => document.getElementById(id);
@@ -50,7 +51,7 @@ function renderTitle(t, w, h) {
   if (titleKey !== `${w}x${h}@${pr}`) { titleKey = `${w}x${h}@${pr}`; titleComp.setPixelRatio(pr); titleComp.setSize(w, h); }
   menuSky.userData.viewH = h; menuSky.material.uniforms.uStarK.value = 1.4;
   updateSky(menuSky, { camera: menuCam, camPos: cp, theta: 0, planet: titlePlanet, sunDir: sun, time: t * 30 });
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15;
+  applyTone(renderer, 1.15);
   titleComp.render();
 }
 function showTitle() {

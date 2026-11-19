@@ -14,7 +14,7 @@ import * as THREE from '../vendor/three.module.js';
 import { mergeGeometries } from '../vendor/jsm/utils/BufferGeometryUtils.js';
 import { RoomEnvironment } from '../vendor/jsm/environments/RoomEnvironment.js';
 import { PART_LIST } from './parts.js';
-import { col, recipe } from './style.js';
+import { col, recipe, applyTone } from './style.js';
 
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 const TAU = Math.PI * 2;
@@ -952,7 +952,7 @@ export function renderThumbnails() {
   const size = 160;
   const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(1); renderer.setSize(size, size, false); renderer.setClearColor(0x000000, 0);
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+  applyTone(renderer, 1.0);
   const scene = new THREE.Scene();
   scene.environment = studioEnvironment(renderer); scene.environmentIntensity = 0.75;
   const dl = new THREE.DirectionalLight(0xffffff, 2.2); dl.position.set(2, 3, 4); scene.add(dl);
