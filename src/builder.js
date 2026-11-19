@@ -635,7 +635,7 @@ export class Builder {
     this.camera.updateMatrixWorld();
     if (this.needPlace) { this.needPlace = false; if (held) this.updatePlacement(); }
     if (this.sun.castShadow !== gfx.shadows > 0) this.fitShadow();
-    applyTone(this.renderer, 1.35);     // a bright studio: white paint should read white
+    applyTone(this.renderer, 1.1);
     this.renderer.render(this.scene, this.camera);
   }
 }

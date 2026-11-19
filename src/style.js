@@ -46,11 +46,12 @@ export const PALETTE = {
   grime: '#6f665b', rust: '#7c4a2e', soot: '#1f1d1b', primer: '#9a9890',
 };
 // ---------- the camera's tone curve ----------
-// One decision for every view (title, hangar, flight, map, thumbnails). AgX rolls highlights off the way film and
-// camera sensors do: bright cloud, smoke and white paint keep their shading instead of clipping to flat white,
-// and saturated colours drift toward white as they brighten instead of turning neon. `exposure(e)` scales each
-// view's own exposure to the curve's mid-grey.
-export const TONE = { mapping: THREE.AgXToneMapping, k: 1.15 };
+// One decision for every view (title, hangar, flight, map, thumbnails). Khronos PBR Neutral keeps colours and
+// hues as rendered (grass stays green, the sea blue, white paint white) and only compresses the brightest
+// highlights, so sunlit cloud and smoke keep their shading instead of clipping like ACES. (AgX was tried and
+// rejected: soft, but it drained the colour out of everything.) A touch of vibrance after the curve
+// (post.js) lifts muted colours. `k` scales each view's own exposure.
+export const TONE = { mapping: THREE.NeutralToneMapping, k: 1.0, vibrance: 0.22 };
 export const applyTone = (renderer, e) => { renderer.toneMapping = TONE.mapping; renderer.toneMappingExposure = e * TONE.k; };
 
 export const col = (name) => new THREE.Color(PALETTE[name]);

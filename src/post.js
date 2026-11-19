@@ -6,6 +6,7 @@
 import * as THREE from '../vendor/three.module.js';
 import { Pass, FullScreenQuad } from '../vendor/jsm/postprocessing/Pass.js';
 import { OutputPass } from '../vendor/jsm/postprocessing/OutputPass.js';
+import { TONE } from './style.js';
 
 const VERT = 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
 
@@ -86,12 +87,22 @@ export class PhysicalBloomPass extends Pass {
 //   tone curve, so bright corners stay bright and it never reads as a grey frame laid on top);
 // · dither: the frame is HDR until here, then quantised to 8 bits; dark sky gradients and the haze over the limb
 //   would band into steps. Half a step of triangular noise breaks them up and is invisible itself.
+// · vibrance: after the tone curve, muted colours get a little more saturation and already strong ones
+//   almost none, so grass and sea look alive without anything turning neon (TONE.vibrance in style.js).
 export function outputPass() {
   const p = new OutputPass();
+  p.material.uniforms.uVib = { value: TONE.vibrance };
+  const render = p.render.bind(p);
+  p.render = (...a) => { p.material.uniforms.uVib.value = TONE.vibrance; render(...a); };
   p.material.fragmentShader = p.material.fragmentShader
     .replace('gl_FragColor = texture2D( tDiffuse, vUv );', `gl_FragColor = texture2D( tDiffuse, vUv );
       vec2 vq = (vUv - 0.5) * 1.4142;
       gl_FragColor.rgb *= 1.0 - 0.13 * pow(dot(vq, vq), 1.5);`)
+    .replace('uniform sampler2D tDiffuse;', 'uniform sampler2D tDiffuse; uniform float uVib;')
+    .replace(/(#ifdef SRGB_TRANSFER)/, `{ vec3 c = gl_FragColor.rgb; float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+        gl_FragColor.rgb = max(mix(vec3(l), c, 1.0 + uVib * (1.0 - clamp(sat * 1.5, 0.0, 1.0))), 0.0); }
+      $1`)
     .replace(/(#ifdef SRGB_TRANSFER[\s\S]*?#endif)/, `$1
       vec2 dq = gl_FragCoord.xy;
       float n1 = fract(52.9829189 * fract(dot(dq, vec2(0.06711056, 0.00583715))));
