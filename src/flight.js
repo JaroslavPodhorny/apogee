@@ -1,6 +1,6 @@
 // Flight view: renders the world, handles piloting input, HUD, navball and the orbit map.
 import * as THREE from '../vendor/three.module.js';
-import { World, orbitElements, cloudTop } from './sim.js';
+import { World, orbitElements, cloudTop, keplerStep } from './sim.js';
 import { Booms } from './boom.js';
 import { currentUniverse, loadWorld, saveWorld } from './universe.js';
 import { partMesh, lightMats, interstageMesh, fairingHalfMesh, frostMaterial, MAT } from './meshes.js';
@@ -252,13 +252,21 @@ export class Flight {
       pts.frustumCulled = false; ms.add(pts);
     }
     this.orbitGeo = new THREE.BufferGeometry(); this.orbitGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(361 * 3), 3));
-    this.orbitLine = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xf3f1ec, transparent: true, opacity: 0.8 })); this.orbitLine.frustumCulled = false; ms.add(this.orbitLine);
+    // the orbit: bright in front of the globe, a faint trace where it passes behind it
+    this.orbitLine = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xf3f1ec, transparent: true, opacity: 0.95 })); this.orbitLine.frustumCulled = false; this.orbitLine.renderOrder = 3; ms.add(this.orbitLine);
+    this.orbitBack = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xf3f1ec, transparent: true, opacity: 0.18, depthTest: false })); this.orbitBack.frustumCulled = false; this.orbitBack.renderOrder = 2; ms.add(this.orbitBack);
+    // the ground track: where the craft will pass overhead over the next orbit (the planet turns under it)
+    this.trackGeo = new THREE.BufferGeometry(); this.trackGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(400 * 3), 3)); this.trackGeo.setDrawRange(0, 0);
+    this.trackLine = new THREE.Line(this.trackGeo, new THREE.LineDashedMaterial({ color: 0xe2b227, transparent: true, opacity: 0.85, dashSize: (pl.R / 1000) * 0.02, gapSize: (pl.R / 1000) * 0.012 }));
+    this.trackLine.frustumCulled = false; this.mapPlanet.userData.planet.add(this.trackLine);
+    this.trackT = 1e9; this.mapUI = { track: true, focus: 'planet' };
+    mu.mat.uniforms.uSite.value.copy(world.siteFixed);
     const sprite = (tex, s) => { const sp2 = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false })); sp2.scale.setScalar(s); sp2.renderOrder = 5; ms.add(sp2); return sp2; };
-    this.mkVessel = sprite(dotTexture('#ffffff', true), 0.045);
-    this.mkAp = sprite(dotTexture('#f3f1ec'), 0.018); this.mkPe = sprite(dotTexture('#f3f1ec'), 0.018);
+    this.mkVessel = sprite(dotTexture('#ffffff', true), 0.04);
+    this.mkAp = sprite(dotTexture('#7fc4ff'), 0.016); this.mkPe = sprite(dotTexture('#7fe0b0'), 0.016);
     this.mkDebris = [];
     this.mapOrb = { az: 0.6, el: 0.5, dist: (pl.R / 1000) * 3.6 };
-    this.map = false; this.paused = false; this.warpIdx = 0; this.hudT = 0; this.navT = 0; this.time = 0; this.drag = null;
+    this.map = false; $('f-mapui').hidden = true; this.paused = false; this.warpIdx = 0; this.hudT = 0; this.navT = 0; this.time = 0; this.drag = null;
     this.labels = {};
     $('f-labels').innerHTML = ''; $('f-msgs').innerHTML = ''; $('f-big').innerHTML = ''; $('f-end').hidden = true; $('f-help').hidden = true;
     this.keys.clear(); this.stageKey = null; this.maxAlt = 0; this.ended = false; this.spectate = null;
@@ -891,7 +899,7 @@ export class Flight {
     $('f-thr-txt').textContent = Math.round(t * 100);
     $('f-throttle-fill').style.height = `${t * 100}%`; $('f-throttle-knob').style.bottom = `${t * 100}%`;
   }
-  toggleMap() { this.map = !this.map; if (this.taa) this.taa.valid = false; $('f-map').classList.toggle('on', this.map); $('f-labels').innerHTML = ''; this.labels = {}; }
+  toggleMap() { this.map = !this.map; if (this.taa) this.taa.valid = false; $('f-map').classList.toggle('on', this.map); $('f-labels').innerHTML = ''; this.labels = {}; const ui = $('f-mapui'); if (ui) ui.hidden = !this.map; this.trackT = 1e9; }
   setWarp(d) {
     const w = this.world;
     let i = THREE.MathUtils.clamp(d === -99 ? 0 : this.warpIdx + d, 0, WARPS.length - 1);
@@ -1221,9 +1229,14 @@ export class Flight {
     const world = this.world, pl = world.planet, a = world.active;
     const o = this.mapOrb, ce = Math.cos(o.el);
     const cam = this.mapCam;
-    cam.aspect = w / h; cam.updateProjectionMatrix();
-    cam.position.set(o.dist * ce * Math.sin(o.az), o.dist * Math.sin(o.el), o.dist * ce * Math.cos(o.az));
-    cam.up.set(0, 1, 0); cam.lookAt(0, 0, 0); cam.updateMatrixWorld();
+    // the orbit panel takes the right side: frame the globe in the space left of it
+    const shift = THREE.MathUtils.clamp((w - 560) * 0.22, 0, 150);
+    cam.aspect = w / h; cam.setViewOffset(w + shift * 2, h, shift * 2, 0, w, h); cam.updateProjectionMatrix();
+    // focus: the planet's centre, or the craft (eased, so switching glides)
+    const ft = this.mapUI.focus === 'craft' ? this.origin.clone().multiplyScalar(0.001) : new THREE.Vector3();
+    o.tgt = (o.tgt || new THREE.Vector3()).lerp(ft, 0.12);
+    cam.position.set(o.dist * ce * Math.sin(o.az), o.dist * Math.sin(o.el), o.dist * ce * Math.cos(o.az)).add(o.tgt);
+    cam.up.set(0, 1, 0); cam.lookAt(o.tgt); cam.updateMatrixWorld();
     this.mapPlanet.userData.planet.rotation.y = theta;
     this.mapPlanet.userData.mat.uniforms.uTime.value = world.t;
     const vp = this.origin.clone().multiplyScalar(0.001);
@@ -1233,7 +1246,9 @@ export class Flight {
     const numax = el.e < 1 ? Math.PI : Math.acos(-1 / el.e) * 0.97;
     for (let i = 0; i <= 360; i++) { this.orbitPoint(el, -numax + (2 * numax * i) / 360, tmp); arr[i * 3] = tmp.x; arr[i * 3 + 1] = tmp.y; arr[i * 3 + 2] = tmp.z; }
     this.orbitGeo.attributes.position.needsUpdate = true;
-    this.orbitLine.visible = !a?.landed;
+    this.orbitLine.visible = this.orbitBack.visible = !a?.landed;
+    this.updateGroundTrack(el);
+    this.updateMapPanel(el);
     this.mkPe.visible = this.mkAp.visible = this.orbitLine.visible;
     this.orbitPoint(el, 0, this.mkPe.position);
     if (el.e < 1) this.orbitPoint(el, Math.PI, this.mkAp.position); else this.mkAp.visible = false;
@@ -1256,6 +1271,55 @@ export class Flight {
     this.renderPass.scene = this.mapScene; this.renderPass.camera = cam;
     applyTone(this.renderer, 1.1);
     this.composer.render();
+  }
+
+  // ground track: propagate the orbit forward (Kepler) and drop each point onto the turning planet, twice a second
+  updateGroundTrack(el) {
+    const world = this.world, pl = world.planet, a = world.active;
+    this.trackT += this.lastDt || 0.016;
+    if (this.trackT < 0.5) return;
+    this.trackT = 0;
+    const show = this.mapUI.track && a && !a.landed && el.e < 1 && el.pe > -pl.R * 0.05;
+    this.trackLine.visible = show;
+    if (!show) return;
+    const r = a.r.clone(), v = a.v.clone(), P = Math.min(el.period, 6 * 3600), n = 360, dt = P / n, R = pl.R / 1000 * 1.002, arr = this.trackGeo.attributes.position.array, th0 = world.theta();
+    let k = 0;
+    for (let i = 0; i <= n; i++) {
+      if (i) keplerStep(r, v, pl.mu, dt);
+      if (r.length() < pl.R) break;
+      // inertial → planet-fixed: undo the planet's turn by then
+      const th = th0 + pl.omega * dt * i, c = Math.cos(th), s = Math.sin(th), u = r.clone().normalize();
+      arr[k * 3] = (c * u.x - s * u.z) * R; arr[k * 3 + 1] = u.y * R; arr[k * 3 + 2] = (s * u.x + c * u.z) * R; k++;
+    }
+    this.trackGeo.attributes.position.needsUpdate = true; this.trackGeo.setDrawRange(0, k);
+    this.trackLine.computeLineDistances();
+  }
+  // the orbit panel beside the map
+  updateMapPanel(el) {
+    const box = $('f-mapui'); if (!box) return;
+    const a = this.world.active, pl = this.world.planet;
+    if (!this.mapUIBuilt) {
+      this.mapUIBuilt = true;
+      box.innerHTML = `<div class="mp-h">Orbit</div><div class="mp-rows"></div>
+        <div class="mp-ctl"><div class="seg"><button data-f="planet">Planet</button><button data-f="craft">Craft</button></div>
+        <div class="seg"><button data-z="-1" title="Zoom out">−</button><button data-z="1" title="Zoom in">+</button></div>
+        <button class="mp-tr" title="Where you will pass overhead">Ground track</button></div>
+        <div class="mp-hint">Drag to turn · scroll to zoom · M to close</div>`;
+      for (const b of box.querySelectorAll('[data-f]')) b.onclick = () => { this.mapUI.focus = b.dataset.f; if (b.dataset.f === 'craft') this.mapOrb.dist = Math.min(this.mapOrb.dist, (pl.R / 1000) * 1.9); };
+      for (const b of box.querySelectorAll('[data-z]')) b.onclick = () => { this.mapOrb.dist = THREE.MathUtils.clamp(this.mapOrb.dist * (b.dataset.z > 0 ? 0.75 : 1.33), (pl.R / 1000) * 1.15, 2e6); };
+      box.querySelector('.mp-tr').onclick = () => { this.mapUI.track = !this.mapUI.track; this.trackT = 1e9; };
+    }
+    for (const b of box.querySelectorAll('[data-f]')) b.classList.toggle('on', b.dataset.f === this.mapUI.focus);
+    box.querySelector('.mp-tr').classList.toggle('on', this.mapUI.track);
+    this.mapPanelT = (this.mapPanelT || 0) + (this.lastDt || 0.016); if (this.mapPanelT < 0.2) return; this.mapPanelT = 0;
+    const inSpace = a && !a.landed, closed = el.e < 1, peOk = el.pe > pl.atmTop;
+    const row = (k, v, cls = '') => `<div class="mp-r ${cls}"><span>${k}</span><b>${v}</b></div>`;
+    box.querySelector('.mp-rows').innerHTML = !inSpace ? row('Status', 'On the ground') :
+      row('Apoapsis', closed ? fmtDist(el.ap) : 'escaping', 'ap') + row('Time to apoapsis', closed ? fmtTime(el.tAp) : '—') +
+      row('Periapsis', fmtDist(el.pe), peOk ? 'pe' : 'warn') + row('Time to periapsis', closed ? fmtTime(el.tPe) : '—') +
+      row('Period', closed ? fmtTime(el.period) : '—') + row('Inclination', `${(el.inc * 180 / Math.PI).toFixed(1)}°`) +
+      row('Eccentricity', el.e.toFixed(3)) + row('Height', fmtDist(a.alt)) + row('Speed', `${Math.round(a.v.length())} m/s`) +
+      (closed && !peOk ? row('', el.pe < 0 ? 'This path meets the ground' : 'Periapsis dips into the air', 'note') : '');
   }
 
   bigMoment(title, sub) {

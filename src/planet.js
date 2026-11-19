@@ -1275,50 +1275,65 @@ export function sunTransmittance(planet, h, mu, out = new THREE.Color()) {
 
 // ---------- textured sphere for the orbit map (units: km) ----------
 export function makeMapPlanet(radiusKm, atmKm, tex) {
+  // The map is a chart, not a photograph: flat cartographic fills, crisp coastlines, a graticule, a gentle night
+  // side. Same monochrome language as the rest of the game; colour only where it means something.
   const g = new THREE.Group();
   const mat = new THREE.ShaderMaterial({
-    uniforms: { tDay: { value: tex.day }, tData: { value: tex.data }, tRelief: { value: tex.relief }, uSun: { value: new THREE.Vector3(1, 0, 0) }, uLon0: { value: LON0 }, uE: { value: SUN_E }, uR: { value: 1 }, uHr: { value: 1 }, uHm: { value: 1 }, uK: { value: 1 }, uTime: { value: 0 } },
+    uniforms: { tDay: { value: tex.day }, tData: { value: tex.data }, tRelief: { value: tex.relief }, uSun: { value: new THREE.Vector3(1, 0, 0) }, uLon0: { value: LON0 }, uE: { value: SUN_E }, uR: { value: 1 }, uHr: { value: 1 }, uHm: { value: 1 }, uK: { value: 1 }, uTime: { value: 0 },
+      uSite: { value: new THREE.Vector3(1, 0, 0) } },
     vertexShader: /* glsl */`varying vec3 vN; varying vec3 vW; void main(){ vN = normalize(position); vW = normalize(mat3(modelMatrix)*position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
     fragmentShader: /* glsl */`${COMMON}
-      varying vec3 vN; varying vec3 vW; uniform vec3 uSun;
+      varying vec3 vN; varying vec3 vW; uniform vec3 uSun, uSite;
+      // a line of constant screen width along the zero crossings of f
+      float line(float f, float w) { float d = abs(f) / max(fwidth(f), 1e-6); return 1.0 - smoothstep(w - 0.5, w + 0.5, d); }
       void main(){
         vec3 n = normalize(vN), w = normalize(vW);
         vec2 uv = lonlat(n);
-        vec3 alb = texture(tDay, uv).rgb; vec4 dat = texture(tData, uv);
-        float cl = smoothstep(0.25, 0.85, dat.r * 1.1);
+        vec4 dat = texture(tData, uv);
+        // land and sea from the water mask, the 8K stair-steps broken up below a texel
+        float cn = vnoise(n * 2200.0, 0) * 0.65 + vnoise(n * 7100.0, 0) * 0.35;
+        float wm = dat.g + (cn - 0.5) * 0.35;
+        float water = smoothstep(0.47, 0.53, wm);
+        // ice: the brightest land at high latitude in the day map
+        vec3 alb = texture(tDay, uv).rgb;
+        float ice = smoothstep(0.55, 0.75, dot(alb, vec3(0.33))) * smoothstep(0.55, 0.75, abs(n.y)) * (1.0 - water);
+        // relief as a soft hillshade from the north-west, the cartographer's convention
+        vec3 rl = texture(tRelief, uv).rgb * 2.0 - 1.0;
+        float shade = clamp(0.5 + 0.9 * dot(rl.xy, vec2(-0.6, 0.8)), 0.0, 1.0);
+        // colours as a chart designer would pick them (sRGB, decoded below): navy-slate sea, graphite land
+        vec3 sea = pow(vec3(0.075, 0.115, 0.16), vec3(2.2)) * (1.05 - 0.15 * smoothstep(0.53, 0.9, wm));     // deeper water a touch darker
+        vec3 land = pow(vec3(0.2, 0.215, 0.23), vec3(2.2)) * (0.7 + 0.6 * shade);
+        land = mix(land, pow(vec3(0.5, 0.53, 0.56), vec3(2.2)), ice);
+        vec3 col = mix(land, sea, water);
+        // coastline
+        col = mix(col, pow(vec3(0.62, 0.68, 0.74), vec3(2.2)), line(wm - 0.5, 0.55) * 0.9);
+        // graticule: every 15 degrees, the equator and prime meridian stronger
+        float lat = asin(clamp(n.y, -1.0, 1.0)) * 57.2958, lon = atan(n.z, n.x) * 57.2958;
+        float gl = max(line(fract(lat / 15.0 + 0.5) - 0.5, 0.5), line(fract(lon / 15.0 + 0.5) - 0.5, 0.5) * smoothstep(88.0, 80.0, abs(lat)));
+        col = mix(col, pow(vec3(0.35, 0.42, 0.5), vec3(2.2)), gl * 0.4);
+        col = mix(col, pow(vec3(0.5, 0.58, 0.66), vec3(2.2)), line(lat, 0.6) * 0.55);
+        // the launch site
+        float sd = acos(clamp(dot(n, uSite), -1.0, 1.0));
+        float ring = line(sd - 0.012, 0.8) + (1.0 - smoothstep(0.003, 0.0045, sd));
+        col = mix(col, pow(vec3(0.89, 0.7, 0.15), vec3(2.2)), clamp(ring, 0.0, 1.0));
+        // night side: a step darker, with a soft terminator
         float nl = dot(w, uSun);
-        vec3 V = normalize(cameraPosition - vW * ${radiusKm.toFixed(1)});
-        // the water mask is 8K: break up its stair-stepped coastline with sub-texel noise
-    float cn = vnoise(n * 2200.0, 0) * 0.65 + vnoise(n * 7100.0, 0) * 0.35;
-        float water = smoothstep(0.4, 0.6, dat.g + (cn - 0.5) * 0.55);
-        vec3 hv = normalize(uSun + V);
-        // the sun's glint off the sea: a small, intense, energy-conserving highlight (narrow lobe, normalised,
-        // water's Fresnel reflectance of a few per cent), not a broad blown-out disc
-        float sh = 900.0, Fr = 0.02 + 0.98 * pow(1.0 - max(dot(hv, V), 0.0), 5.0);
-        float spec = (sh + 8.0) / (8.0 * PI) * pow(max(dot(w, hv), 0.0), sh) * Fr * water * (1.0 - cl);
-        float day = smoothstep(-0.1, 0.15, nl);
-        vec3 lit = uE / PI * max(nl, 0.0) * mix(vec3(1.0), vec3(1.0, 0.55, 0.3), pow(1.0 - max(nl, 0.0), 6.0));
-        vec3 col = mix(alb * mix(1.0, 0.5, water), vec3(0.9), cl) * (lit + uE * 0.004) + uE * spec * max(nl, 0.0);
-        col += vec3(1.0, 0.72, 0.4) * pow(dat.b, 2.2) * 0.9 * (1.0 - day) * (1.0 - 0.7 * cl);
-        float rim = pow(1.0 - max(dot(w, V), 0.0), 3.0);
-        col += vec3(0.25, 0.45, 1.0) * rim * uE * 0.05 * smoothstep(-0.25, 0.3, nl);
-        gl_FragColor = vec4(col, 1.0);
+        col *= mix(0.42, 1.0, smoothstep(-0.12, 0.12, nl));
+        gl_FragColor = vec4(col / 1.1, 1.0);       // the map view's exposure is 1.1: undo it, the chart keeps its colours
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }`,
   });
   const planet = new THREE.Mesh(new THREE.SphereGeometry(radiusKm, 192, 96), mat);
   g.add(planet);
-  const halo = new THREE.Mesh(new THREE.SphereGeometry(radiusKm + atmKm, 128, 64), new THREE.ShaderMaterial({
+  // the atmosphere as a thin bright outline round the disc, not a glow
+  const halo = new THREE.Mesh(new THREE.SphereGeometry(radiusKm * 1.012, 128, 64), new THREE.ShaderMaterial({
     side: THREE.BackSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     uniforms: { uSun: { value: new THREE.Vector3(1, 0, 0) }, uE: { value: SUN_E } },
     vertexShader: /* glsl */`varying vec3 vW; varying vec3 vP; void main(){ vW = normalize(mat3(modelMatrix)*normal); vec4 wp = modelMatrix*vec4(position,1.0); vP = wp.xyz; gl_Position = projectionMatrix*viewMatrix*wp; }`,
-    fragmentShader: /* glsl */`varying vec3 vW; varying vec3 vP; uniform vec3 uSun; uniform float uE;
-      void main(){ vec3 v = normalize(cameraPosition - vP); float f = pow(1.0 - abs(dot(v, vW)), 4.0);
-        float s = dot(normalize(vP), uSun); float day = smoothstep(-0.3, 0.25, s);
-        // blue over the day side; the warm band only along the terminator, where sunlight crosses the most air
-        vec3 c = mix(vec3(1.0, 0.45, 0.2), vec3(0.3, 0.55, 1.0), smoothstep(-0.2, 0.05, s));
-        gl_FragColor = vec4(c * f * day * uE * 0.06, 1.0); }`,
+    fragmentShader: /* glsl */`varying vec3 vW; varying vec3 vP;
+      void main(){ vec3 v = normalize(cameraPosition - vP); float f = pow(1.0 - abs(dot(v, vW)), 10.0);
+        gl_FragColor = vec4(vec3(0.35, 0.55, 0.85) * f * 1.4, 1.0); }`,
   }));
   g.add(halo);
   g.userData = { planet, mat, halo };
