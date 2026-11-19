@@ -298,9 +298,15 @@ kbd { font: 600 11px/1 var(--text); display: inline-block; padding: 3px 5px 2px;
 #gfx .row .solid { margin-left: auto; }
 #fps { position: fixed; left: 50%; transform: translateX(-50%); bottom: 4px; z-index: 31; font: 500 12px/1 var(--num); color: var(--ink-2); text-shadow: var(--shadow); pointer-events: none; letter-spacing: 0.02em; }
 
-/* map: one quiet line of numbers under the clock, labels on the map itself */
-#f-mapui { position: absolute; top: 58px; right: var(--gut); text-align: right; font: 500 15px/1.3 var(--num); color: var(--ink); letter-spacing: 0.02em; pointer-events: none; }
-#f-mapui i { font-style: normal; color: var(--ink-3); margin: 0 7px; }
-#f-mapui small { display: block; margin-top: 3px; font: 400 11px var(--text); color: var(--ink-3); letter-spacing: 0; }
-#f-labels .lbl { font: 500 13px var(--num); letter-spacing: 0.02em; color: var(--ink); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); transform: translate(10px, -50%); }
-#f-labels .lbl.warn { color: #ffb347; }
+/* map mode: the instruments step aside; the globe, the orbit and one readout are the whole picture */
+#flight-ui.mapmode #f-goal, #flight-ui.mapmode #f-left, #flight-ui.mapmode #f-fuel, #flight-ui.mapmode #f-bottom,
+#flight-ui.mapmode #f-stagecol, #flight-ui.mapmode #f-msgs, #flight-ui.mapmode #f-big, #flight-ui.mapmode .scrim-bottom { display: none; }
+#f-mapui { position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%); display: flex; gap: 0; pointer-events: none; text-shadow: var(--shadow); }
+#f-mapui > div { padding: 0 26px; text-align: center; border-left: 1px solid var(--rule); }
+#f-mapui > div:first-child { border-left: 0; }
+#f-mapui small { display: block; font: 500 11px var(--text); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 6px; }
+#f-mapui b { font: 400 30px/1 var(--num); letter-spacing: 0.01em; color: var(--ink); }
+#f-mapui .warn b { color: #ffb347; }
+#f-labels .lbl { font: 500 12px var(--text); letter-spacing: 0.04em; color: var(--ink); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85); transform: translate(12px, -50%); }
+#f-labels .lbl.tag { font: 600 11px var(--text); letter-spacing: 0.1em; color: #ff8a5b; transform: translate(8px, -50%); }
+#f-labels .lbl.tag.warn { color: #ffb347; }

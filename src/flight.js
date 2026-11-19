@@ -9,6 +9,7 @@ import { Terrain } from './terrain.js';
 import { cloudNoise, groundDetail } from './clouds.js';
 import { Smoke, Sparks, plumeMaterial, plumeGeo, fireballGeo, fireballMaterial, plasmaGeo, plasmaCapGeo, plasmaMaterials, vaporGeo, vaporMaterial } from './fx.js';
 import { Scatter } from './scatter.js';
+import { bakeMapHeights } from './terrain.js';
 import { gfx, onGfx } from './gfx.js';
 import { applyTone } from './style.js';
 import { PhysicalBloomPass, outputPass } from './post.js';
@@ -266,7 +267,7 @@ export class Flight {
     this.mkAp = sprite(dotTexture('#ff6a2e'), 0.014); this.mkPe = sprite(dotTexture('#ff6a2e'), 0.014);
     this.mkDebris = [];
     this.mapOrb = { az: 0.6, el: 0.5, dist: (pl.R / 1000) * 3.6 };
-    this.map = false; $('f-mapui').hidden = true; this.paused = false; this.warpIdx = 0; this.hudT = 0; this.navT = 0; this.time = 0; this.drag = null;
+    this.map = false; $('f-mapui').hidden = true; $('flight-ui').classList.remove('mapmode'); this.paused = false; this.warpIdx = 0; this.hudT = 0; this.navT = 0; this.time = 0; this.drag = null;
     this.labels = {};
     $('f-labels').innerHTML = ''; $('f-msgs').innerHTML = ''; $('f-big').innerHTML = ''; $('f-end').hidden = true; $('f-help').hidden = true;
     this.keys.clear(); this.stageKey = null; this.maxAlt = 0; this.ended = false; this.spectate = null;
@@ -900,7 +901,18 @@ export class Flight {
     $('f-thr-txt').textContent = Math.round(t * 100);
     $('f-throttle-fill').style.height = `${t * 100}%`; $('f-throttle-knob').style.bottom = `${t * 100}%`;
   }
-  toggleMap() { this.map = !this.map; if (this.taa) this.taa.valid = false; $('f-map').classList.toggle('on', this.map); $('f-labels').innerHTML = ''; this.labels = {}; const ui = $('f-mapui'); if (ui) ui.hidden = !this.map; this.trackT = 1e9; }
+  toggleMap() {
+    this.map = !this.map; if (this.taa) this.taa.valid = false; $('f-map').classList.toggle('on', this.map); $('f-labels').innerHTML = ''; this.labels = {};
+    // map mode: the flight instruments step aside; the globe, the orbit and one readout are the whole picture
+    $('flight-ui').classList.toggle('mapmode', this.map); $('f-mapui').hidden = !this.map; this.trackT = 1e9;
+    // the game world's heights, baked once per world the first time the map opens
+    const kind = this.world.planet.kind, U = this.mapPlanet.userData.mat.uniforms;
+    if (this.map && this.terrain) {
+      this.mapHeights ||= {};
+      this.mapHeights[kind] ||= bakeMapHeights(this.renderer, this.terrain);
+      U.tHeight.value = this.mapHeights[kind].texture; U.uHasH.value = 1; U.uA.value = this.terrain.A;
+    }
+  }
   setWarp(d) {
     const w = this.world;
     let i = THREE.MathUtils.clamp(d === -99 ? 0 : this.warpIdx + d, 0, WARPS.length - 1);
@@ -1223,7 +1235,7 @@ export class Flight {
     const vis = p.z < 1 && Math.abs(p.x) < 1.1 && Math.abs(p.y) < 1.1;
     el.style.display = vis ? '' : 'none';
     if (!vis) return;
-    el.textContent = text; el.classList.toggle('warn', color === 'warn');
+    el.textContent = text; el.className = `lbl ${color || ''}`;
     el.style.left = `${(p.x * 0.5 + 0.5) * w}px`; el.style.top = `${(-p.y * 0.5 + 0.5) * h}px`;
   }
   renderMap(w, h, theta) {
@@ -1251,9 +1263,9 @@ export class Flight {
     this.mkPe.visible = this.mkAp.visible = this.orbitLine.visible;
     this.orbitPoint(el, 0, this.mkPe.position);
     if (el.e < 1) this.orbitPoint(el, Math.PI, this.mkAp.position); else this.mkAp.visible = false;
-    this.label('v', a && !a.landed ? `${a.name || 'Rocket'} · ${fmtDist(a.alt)} · ${Math.round(a.v.length())} m/s` : (a?.name || 'Rocket'), vp, '', w, h);
-    if (this.mkAp.visible) this.label('ap', `Ap ${fmtDist(el.ap)} · in ${fmtTime(el.tAp)}`, this.mkAp.position, '', w, h); else if (this.labels.ap) this.labels.ap.style.display = 'none';
-    if (this.mkPe.visible && el.pe > -pl.R * 0.5) this.label('pe', `Pe ${fmtDist(el.pe)}${el.e < 1 ? ` · in ${fmtTime(el.tPe)}` : ''}`, this.mkPe.position, el.pe > pl.atmTop ? '' : 'warn', w, h); else if (this.labels.pe) this.labels.pe.style.display = 'none';
+    this.label('v', a?.name || 'Rocket', vp, '', w, h);
+    if (this.mkAp.visible) this.label('ap', 'Ap', this.mkAp.position, 'tag', w, h); else if (this.labels.ap) this.labels.ap.style.display = 'none';
+    if (this.mkPe.visible && el.pe > -pl.R * 0.5) this.label('pe', 'Pe', this.mkPe.position, el.pe > pl.atmTop ? 'tag' : 'tag warn', w, h); else if (this.labels.pe) this.labels.pe.style.display = 'none';
     const debris = world.vessels.filter((v) => v !== a);
     while (this.mkDebris.length < debris.length) { const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.mkPe.material.map, color: 0x999999, depthTest: false, sizeAttenuation: false })); s.scale.setScalar(0.012); this.mapScene.add(s); this.mkDebris.push(s); }
     this.mkDebris.forEach((s, i) => {
@@ -1293,13 +1305,14 @@ export class Flight {
     this.trackGeo.attributes.position.needsUpdate = true; this.trackGeo.setDrawRange(0, k);
     this.trackLine.computeLineDistances();
   }
-  // the few numbers worth reading on the map, in one quiet line
+  // the map's one readout: three numbers that describe the orbit, set like an instrument
   updateMapInfo(el) {
     const box = $('f-mapui'); if (!box) return;
     this.mapPanelT = (this.mapPanelT || 0) + (this.lastDt || 0.016); if (this.mapPanelT < 0.25) return; this.mapPanelT = 0;
-    const a = this.world.active, closed = el.e < 1;
-    const parts = a && !a.landed ? [closed ? `Period ${fmtTime(el.period)}` : 'Escaping', `Inclination ${(el.inc * 180 / Math.PI).toFixed(1)}°`] : ['On the ground'];
-    box.innerHTML = `<span>${parts.join('<i>·</i>')}</span><small>Drag to turn · scroll to zoom · F to focus on the ${this.mapUI.focus === 'craft' ? 'planet' : 'craft'} · M to close</small>`;
+    const a = this.world.active, pl = this.world.planet;
+    if (!a || a.landed) { box.innerHTML = ''; return; }
+    const closed = el.e < 1, cell = (k, v, cls = '') => `<div class="${cls}"><small>${k}</small><b>${v}</b></div>`;
+    box.innerHTML = cell('Apoapsis', closed ? fmtDist(el.ap) : '—') + cell('Periapsis', fmtDist(el.pe), el.pe > pl.atmTop ? '' : 'warn') + cell('Period', closed ? fmtTime(el.period) : '—');
   }
 
   bigMoment(title, sub) {

@@ -1275,14 +1275,29 @@ export function sunTransmittance(planet, h, mu, out = new THREE.Color()) {
 
 // ---------- textured sphere for the orbit map (units: km) ----------
 export function makeMapPlanet(radiusKm, atmKm, tex) {
-  // The map: a calm two-tone globe (land, sea, coastline, the launch site), evenly lit, under the orbit.
+  // The map: a shaded relief map of the game world itself (its baked heights: hypsometric tints, a cartographer's
+  // warm-and-cool hillshade, the sea by depth, the coastline), evenly lit, under the orbit.
   const g = new THREE.Group();
   const mat = new THREE.ShaderMaterial({
     uniforms: { tDay: { value: tex.day }, tData: { value: tex.data }, tRelief: { value: tex.relief }, uSun: { value: new THREE.Vector3(1, 0, 0) }, uLon0: { value: LON0 }, uE: { value: SUN_E }, uR: { value: 1 }, uHr: { value: 1 }, uHm: { value: 1 }, uK: { value: 1 }, uTime: { value: 0 },
-      uSite: { value: new THREE.Vector3(1, 0, 0) } },
+      uSite: { value: new THREE.Vector3(1, 0, 0) }, tHeight: { value: null }, uHasH: { value: 0 }, uRm: { value: radiusKm * 1000 }, uA: { value: 1 } },
     vertexShader: /* glsl */`varying vec3 vN; varying vec3 vW; void main(){ vN = normalize(position); vW = normalize(mat3(modelMatrix)*position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
     fragmentShader: /* glsl */`${COMMON}
-      varying vec3 vN; varying vec3 vW; uniform vec3 uSun, uSite;
+      varying vec3 vN; varying vec3 vW; uniform vec3 uSun, uSite; uniform sampler2D tHeight; uniform float uHasH, uRm, uA;
+      // the game world's own heights (baked from terrainH), equirectangular
+      vec2 hUV(vec3 n) { return vec2(atan(n.z, n.x) / 6.2831853 + 0.5, asin(clamp(n.y, -1.0, 1.0)) / 3.1415927 + 0.5); }
+      float Hs(vec2 uv) { return texture(tHeight, uv).r; }
+      // relief-map tints by height above the sea (metres, at Earth scale): Imhof's sequence, lowland green
+      // through cream and tan to grey-brown rock and snow
+      vec3 hyps(float h) {
+        vec3 c = vec3(0.64, 0.74, 0.53);
+        c = mix(c, vec3(0.79, 0.83, 0.62), smoothstep(80.0, 450.0, h));
+        c = mix(c, vec3(0.9, 0.86, 0.68), smoothstep(450.0, 1100.0, h));
+        c = mix(c, vec3(0.83, 0.72, 0.54), smoothstep(1100.0, 2000.0, h));
+        c = mix(c, vec3(0.69, 0.6, 0.5), smoothstep(2000.0, 3000.0, h));
+        c = mix(c, vec3(0.93, 0.92, 0.9), smoothstep(3300.0, 4000.0, h));
+        return c;
+      }
       // a line of constant screen width along the zero crossings of f
       float line(float f, float w) { float d = abs(f) / max(fwidth(f), 1e-6); return 1.0 - smoothstep(w - 0.5, w + 0.5, d); }
       void main(){
@@ -1293,12 +1308,40 @@ export function makeMapPlanet(radiusKm, atmKm, tex) {
         float cn = vnoise(n * 2200.0, 0) * 0.65 + vnoise(n * 7100.0, 0) * 0.35;
         float wm = dat.g + (cn - 0.5) * 0.35;
         float water = smoothstep(0.47, 0.53, wm);
-        // Two calm tones and a line: land a light warm grey, sea a muted grey-blue, a thin darker coastline,
-        // the launch site in red. Nothing else: the orbit drawn over it is the subject.
-        vec3 col = mix(vec3(0.84, 0.83, 0.79), vec3(0.6, 0.67, 0.73), water);
-        col = mix(col, vec3(0.42, 0.47, 0.52), line(wm - 0.5, 0.5) * 0.9);
+        // A shaded relief map of the game world, drawn from its own height field.
+        vec3 col;
+        if (uHasH > 0.5) {
+          vec2 hu = hUV(n);
+          vec2 e = vec2(1.0 / 2048.0, 1.0 / 1024.0) * 4.0;      // slopes over a few km: the map generalises
+          float H = Hs(hu);
+          // tint from a smoothed height, so small hills do not flicker the colours
+          float Hm = (H * 2.0 + Hs(hu + vec2(e.x, 0.0) * 1.5) + Hs(hu - vec2(e.x, 0.0) * 1.5) + Hs(hu + vec2(0.0, e.y) * 1.5) + Hs(hu - vec2(0.0, e.y) * 1.5)) / 6.0;
+          float hh = max(Hm, 0.0) / uA;
+          Hm = Hm < 0.0 && H > -3.0 ? max(Hm, -0.0) + 0.0 : Hm;     // (kept as is: the smoothed height decides land and sea)                           // to Earth-scale metres for the tints
+          float lat = asin(clamp(n.y, -1.0, 1.0));
+          float gx = (Hs(hu + vec2(e.x, 0.0)) - Hs(hu - vec2(e.x, 0.0))) / (2.0 * 6.2831853 * uRm * max(cos(lat), 0.05) * e.x);
+          float gy = (Hs(hu + vec2(0.0, e.y)) - Hs(hu - vec2(0.0, e.y))) / (2.0 * 3.1415927 * uRm * e.y);
+          vec3 nr = normalize(vec3(-gx * 3.5, -gy * 3.5, 1.0));          // relief exaggerated a little, to read at planet scale
+          float sh = clamp(dot(nr, normalize(vec3(-0.55, 0.6, 0.58))), 0.0, 1.0);
+          // hillshade the way a cartographer paints it: warm where the light falls, cool blue-grey in shadow
+          vec3 tone = mix(vec3(0.74, 0.79, 0.88), vec3(1.05, 1.02, 0.97), smoothstep(0.4, 0.95, sh));
+          float sea = 1.0 - smoothstep(-0.6, 0.6, Hm);
+          vec3 land = hyps(hh) * tone;
+          float polar = smoothstep(0.88, 0.94, abs(n.y));
+          land = mix(land, vec3(0.94, 0.95, 0.97) * mix(vec3(0.82, 0.86, 0.94), vec3(1.0), smoothstep(0.35, 0.95, sh)), polar);
+          // the sea by its depth: pale teal over the shelf, deepening blue offshore
+          float dep = max(-H, 0.0) / uA;
+          vec3 water = mix(vec3(0.6, 0.79, 0.8), vec3(0.38, 0.57, 0.66), smoothstep(2.0, 30.0, dep));
+          water = mix(water, vec3(0.24, 0.4, 0.52), smoothstep(30.0, 100.0, dep));
+          col = mix(land, water, sea);
+          // the coastline: a crisp dark line (no contours: at planet scale the small hills would only speckle)
+          col = mix(col, vec3(0.2, 0.34, 0.42), line(Hm, 0.55) * 0.75);
+        } else {
+          col = mix(vec3(0.84, 0.83, 0.79), vec3(0.6, 0.67, 0.73), water);
+          col = mix(col, vec3(0.42, 0.47, 0.52), line(wm - 0.5, 0.5) * 0.9);
+        }
         float sd = acos(clamp(dot(n, uSite), -1.0, 1.0));
-        col = mix(col, vec3(0.82, 0.2, 0.14), 1.0 - smoothstep(0.004, 0.0055, sd));
+        col = mix(col, vec3(0.86, 0.16, 0.1), 1.0 - smoothstep(0.004, 0.0055, sd));
         col = pow(col, vec3(2.2));     // display colours to linear
         gl_FragColor = vec4(col / 1.1, 1.0);       // the map view's exposure is 1.1: undo it, the chart keeps its colours
         #include <tonemapping_fragment>

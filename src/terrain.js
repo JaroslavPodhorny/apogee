@@ -644,3 +644,32 @@ export class Terrain {
     }
   }
 }
+
+// ---------- the game world's heights, baked for the map ----------
+// One pass over an equirectangular grid (longitude across, latitude up) through the very terrainH() the renderer
+// and the physics use, so the map shows exactly the world you fly over: its mountains, valleys, coasts and sea
+// floor. W × H texels, heights in metres (negative = sea floor). The map samples it with lonlat = (atan(z, x), asin(y)).
+export function bakeMapHeights(renderer, terrain, W = 2048, H = 1024) {
+  const rt = new THREE.WebGLRenderTarget(W, H, { type: THREE.FloatType, format: THREE.RedFormat, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false });
+  rt.texture.wrapS = THREE.RepeatWrapping;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { ...terrainUniforms(terrain.R, terrain.A, terrain.site, terrain.ctl), uSize: { value: new THREE.Vector2(W, H) } },
+    vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    fragmentShader: /* glsl */`
+      precision highp float; precision highp int;
+      ${TERRAIN_GLSL}
+      uniform vec2 uSize;
+      void main() {
+        vec2 uv = gl_FragCoord.xy / uSize;
+        float lon = (uv.x - 0.5) * 6.2831853, lat = (uv.y - 0.5) * 3.1415927;
+        vec3 n = vec3(cos(lat) * cos(lon), sin(lat), cos(lat) * sin(lon));
+        gl_FragColor = vec4(terrainH(n), 0.0, 0.0, 1.0);
+      }`,
+  });
+  const q = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat); q.frustumCulled = false;
+  const scene = new THREE.Scene(); scene.add(q);
+  const prev = renderer.getRenderTarget();
+  renderer.setRenderTarget(rt); renderer.render(scene, new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)); renderer.setRenderTarget(prev);
+  mat.dispose(); q.geometry.dispose();
+  return rt;
+}
