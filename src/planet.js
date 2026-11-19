@@ -1275,8 +1275,8 @@ export function sunTransmittance(planet, h, mu, out = new THREE.Color()) {
 
 // ---------- textured sphere for the orbit map (units: km) ----------
 export function makeMapPlanet(radiusKm, atmKm, tex) {
-  // The map is a chart, not a photograph: flat cartographic fills, crisp coastlines, a graticule, a gentle night
-  // side. Same monochrome language as the rest of the game; colour only where it means something.
+  // The map is an atlas globe, not a photograph: flat, evenly lit, land in a printed map's colours, light blue sea,
+  // thin coastlines and graticule, the launch site marked in red.
   const g = new THREE.Group();
   const mat = new THREE.ShaderMaterial({
     uniforms: { tDay: { value: tex.day }, tData: { value: tex.data }, tRelief: { value: tex.relief }, uSun: { value: new THREE.Vector3(1, 0, 0) }, uLon0: { value: LON0 }, uE: { value: SUN_E }, uR: { value: 1 }, uHr: { value: 1 }, uHm: { value: 1 }, uK: { value: 1 }, uTime: { value: 0 },
@@ -1294,31 +1294,37 @@ export function makeMapPlanet(radiusKm, atmKm, tex) {
         float cn = vnoise(n * 2200.0, 0) * 0.65 + vnoise(n * 7100.0, 0) * 0.35;
         float wm = dat.g + (cn - 0.5) * 0.35;
         float water = smoothstep(0.47, 0.53, wm);
-        // ice: the brightest land at high latitude in the day map
-        vec3 alb = texture(tDay, uv).rgb;
-        float ice = smoothstep(0.55, 0.75, dot(alb, vec3(0.33))) * smoothstep(0.55, 0.75, abs(n.y)) * (1.0 - water);
-        // relief as a soft hillshade from the north-west, the cartographer's convention
+        // An atlas, flat-shaded: the satellite map read as land cover (forest, grass, dry land, ice) and painted
+        // in a printed map's calm colours; the sea light blue, paler over the shallows; relief as a faint
+        // hillshade; thin coastlines and a fine graticule. No lighting, no glow: a chart, evenly lit.
+        vec3 alb = texture(tDay, uv, 2.5).rgb;     // a blurred read: maps generalise land cover into calm areas
+        float lum = dot(alb, vec3(0.333));
+        float green = alb.g - max(alb.r, alb.b) * 0.92;
+        float veg = smoothstep(-0.005, 0.03, green);
+        float dry = smoothstep(0.16, 0.32, lum) * (1.0 - veg);
+        float ice = smoothstep(0.5, 0.7, lum) * smoothstep(0.5, 0.7, abs(n.y)) + smoothstep(0.84, 0.9, abs(n.y)) * (1.0 - water);
         vec3 rl = texture(tRelief, uv).rgb * 2.0 - 1.0;
         float shade = clamp(0.5 + 0.9 * dot(rl.xy, vec2(-0.6, 0.8)), 0.0, 1.0);
-        // colours as a chart designer would pick them (sRGB, decoded below): navy-slate sea, graphite land
-        vec3 sea = pow(vec3(0.075, 0.115, 0.16), vec3(2.2)) * (1.05 - 0.15 * smoothstep(0.53, 0.9, wm));     // deeper water a touch darker
-        vec3 land = pow(vec3(0.2, 0.215, 0.23), vec3(2.2)) * (0.7 + 0.6 * shade);
-        land = mix(land, pow(vec3(0.5, 0.53, 0.56), vec3(2.2)), ice);
+        vec3 forest = vec3(0.6, 0.73, 0.52), grass = vec3(0.76, 0.83, 0.62), sand = vec3(0.92, 0.86, 0.7), plain = vec3(0.86, 0.85, 0.75);
+        vec3 land = mix(plain, mix(grass, forest, smoothstep(0.18, 0.08, lum)), veg);
+        land = mix(land, sand, dry);
+        land = mix(land, vec3(0.96, 0.97, 0.98), clamp(ice, 0.0, 1.0));
+        land *= 0.88 + 0.2 * shade;
+        float deep = smoothstep(0.53, 0.95, wm);
+        vec3 sea = mix(vec3(0.72, 0.84, 0.93), vec3(0.56, 0.72, 0.87), deep);
         vec3 col = mix(land, sea, water);
         // coastline
-        col = mix(col, pow(vec3(0.62, 0.68, 0.74), vec3(2.2)), line(wm - 0.5, 0.55) * 0.9);
-        // graticule: every 15 degrees, the equator and prime meridian stronger
+        col = mix(col, vec3(0.36, 0.5, 0.62), line(wm - 0.5, 0.5) * 0.9);
+        // graticule: every 15 degrees, the equator a little stronger
         float lat = asin(clamp(n.y, -1.0, 1.0)) * 57.2958, lon = atan(n.z, n.x) * 57.2958;
-        float gl = max(line(fract(lat / 15.0 + 0.5) - 0.5, 0.5), line(fract(lon / 15.0 + 0.5) - 0.5, 0.5) * smoothstep(88.0, 80.0, abs(lat)));
-        col = mix(col, pow(vec3(0.35, 0.42, 0.5), vec3(2.2)), gl * 0.4);
-        col = mix(col, pow(vec3(0.5, 0.58, 0.66), vec3(2.2)), line(lat, 0.6) * 0.55);
-        // the launch site
+        float gl = max(line(fract(lat / 15.0 + 0.5) - 0.5, 0.45), line(fract(lon / 15.0 + 0.5) - 0.5, 0.45) * smoothstep(88.0, 80.0, abs(lat)));
+        col = mix(col, vec3(0.42, 0.55, 0.66), gl * 0.3);
+        col = mix(col, vec3(0.35, 0.48, 0.6), line(lat, 0.55) * 0.45);
+        // the launch site: a red ring and dot, as a map marks a place
         float sd = acos(clamp(dot(n, uSite), -1.0, 1.0));
-        float ring = line(sd - 0.012, 0.8) + (1.0 - smoothstep(0.003, 0.0045, sd));
-        col = mix(col, pow(vec3(0.89, 0.7, 0.15), vec3(2.2)), clamp(ring, 0.0, 1.0));
-        // night side: a step darker, with a soft terminator
-        float nl = dot(w, uSun);
-        col *= mix(0.42, 1.0, smoothstep(-0.12, 0.12, nl));
+        float ring = line(sd - 0.012, 0.9) + (1.0 - smoothstep(0.003, 0.0045, sd));
+        col = mix(col, vec3(0.82, 0.18, 0.12), clamp(ring, 0.0, 1.0));
+        col = pow(col, vec3(2.2));     // the palette above is in display colours: to linear
         gl_FragColor = vec4(col / 1.1, 1.0);       // the map view's exposure is 1.1: undo it, the chart keeps its colours
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -1326,14 +1332,14 @@ export function makeMapPlanet(radiusKm, atmKm, tex) {
   });
   const planet = new THREE.Mesh(new THREE.SphereGeometry(radiusKm, 192, 96), mat);
   g.add(planet);
-  // the atmosphere as a thin bright outline round the disc, not a glow
+  // a faint pale rim round the disc, so the globe's edge reads against space
   const halo = new THREE.Mesh(new THREE.SphereGeometry(radiusKm * 1.012, 128, 64), new THREE.ShaderMaterial({
     side: THREE.BackSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     uniforms: { uSun: { value: new THREE.Vector3(1, 0, 0) }, uE: { value: SUN_E } },
     vertexShader: /* glsl */`varying vec3 vW; varying vec3 vP; void main(){ vW = normalize(mat3(modelMatrix)*normal); vec4 wp = modelMatrix*vec4(position,1.0); vP = wp.xyz; gl_Position = projectionMatrix*viewMatrix*wp; }`,
     fragmentShader: /* glsl */`varying vec3 vW; varying vec3 vP;
       void main(){ vec3 v = normalize(cameraPosition - vP); float f = pow(1.0 - abs(dot(v, vW)), 10.0);
-        gl_FragColor = vec4(vec3(0.35, 0.55, 0.85) * f * 1.4, 1.0); }`,
+        gl_FragColor = vec4(vec3(0.5, 0.65, 0.85) * f * 0.35, 1.0); }`,
   }));
   g.add(halo);
   g.userData = { planet, mat, halo };

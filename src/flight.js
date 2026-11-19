@@ -253,11 +253,11 @@ export class Flight {
     }
     this.orbitGeo = new THREE.BufferGeometry(); this.orbitGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(361 * 3), 3));
     // the orbit: bright in front of the globe, a faint trace where it passes behind it
-    this.orbitLine = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xf3f1ec, transparent: true, opacity: 0.95 })); this.orbitLine.frustumCulled = false; this.orbitLine.renderOrder = 3; ms.add(this.orbitLine);
-    this.orbitBack = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xf3f1ec, transparent: true, opacity: 0.18, depthTest: false })); this.orbitBack.frustumCulled = false; this.orbitBack.renderOrder = 2; ms.add(this.orbitBack);
+    this.orbitLine = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xff6a2e, transparent: true, opacity: 1 })); this.orbitLine.frustumCulled = false; this.orbitLine.renderOrder = 3; ms.add(this.orbitLine);
+    this.orbitBack = new THREE.Line(this.orbitGeo, new THREE.LineBasicMaterial({ color: 0xff6a2e, transparent: true, opacity: 0.28, depthTest: false })); this.orbitBack.frustumCulled = false; this.orbitBack.renderOrder = 2; ms.add(this.orbitBack);
     // the ground track: where the craft will pass overhead over the next orbit (the planet turns under it)
     this.trackGeo = new THREE.BufferGeometry(); this.trackGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(400 * 3), 3)); this.trackGeo.setDrawRange(0, 0);
-    this.trackLine = new THREE.Line(this.trackGeo, new THREE.LineDashedMaterial({ color: 0xe2b227, transparent: true, opacity: 0.85, dashSize: (pl.R / 1000) * 0.02, gapSize: (pl.R / 1000) * 0.012 }));
+    this.trackLine = new THREE.Line(this.trackGeo, new THREE.LineDashedMaterial({ color: 0xb8321f, transparent: true, opacity: 0.9, dashSize: (pl.R / 1000) * 0.02, gapSize: (pl.R / 1000) * 0.012 }));
     this.trackLine.frustumCulled = false; this.mapPlanet.userData.planet.add(this.trackLine);
     this.trackT = 1e9; this.mapUI = { track: true, focus: 'planet' };
     mu.mat.uniforms.uSite.value.copy(world.siteFixed);
