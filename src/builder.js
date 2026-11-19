@@ -57,8 +57,36 @@ export class Builder {
     const fill = new THREE.DirectionalLight(0x9fc0ff, 0.5); fill.position.set(-40, 10, -30); this.scene.add(fill);
     this.floor = new THREE.Group();
     this.floor.add(new THREE.GridHelper(400, 200, 0x3a3e45, 0x24272c));
-    const pad = new THREE.Mesh(new THREE.CylinderGeometry(7, 7, 0.1, 64), new THREE.MeshBasicMaterial({ color: 0x1f2226 }));
-    pad.position.y = -0.06; this.floor.add(pad);
+    // polished studio floor: the rocket reflected in it, softly, strongest at grazing angles, fading out away
+    // from the pad. A virtual camera mirrored below the floor renders the rocket into a half-size target each
+    // frame; the floor looks it up projectively. (The pad is a slightly lighter disc in the same floor.)
+    this.reflRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType });
+    this.reflCam = new THREE.PerspectiveCamera(40, 1, 0.1, 2000);
+    this.reflU = { tRefl: { value: this.reflRT.texture }, uTexM: { value: new THREE.Matrix4() }, uTexel: { value: new THREE.Vector2() }, uOn: { value: 1 } };
+    // the reflection adds light on top of the floor (additive), so it never hides the pad, the pool or the shadow
+    const floorMat = new THREE.ShaderMaterial({
+      uniforms: this.reflU, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      vertexShader: `varying vec3 vW; varying vec2 vC;
+        void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vC = modelMatrix[3].xz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+      fragmentShader: `uniform sampler2D tRefl; uniform mat4 uTexM; uniform vec2 uTexel; uniform float uOn; varying vec3 vW; varying vec2 vC;
+        void main() {
+          float d = length(vW.xz - vC);
+          vec4 p = uTexM * vec4(vW, 1.0); vec2 uv = p.xy / p.w;
+          vec3 r = texture2D(tRefl, uv).rgb * 0.4 + (texture2D(tRefl, uv + vec2(uTexel.x, 0.0) * 1.5).rgb + texture2D(tRefl, uv - vec2(uTexel.x, 0.0) * 1.5).rgb
+                 + texture2D(tRefl, uv + vec2(0.0, uTexel.y) * 1.5).rgb + texture2D(tRefl, uv - vec2(0.0, uTexel.y) * 1.5).rgb) * 0.15;
+          vec3 V = normalize(cameraPosition - vW);
+          float F = 0.04 + 0.96 * pow(1.0 - clamp(V.y, 0.0, 1.0), 5.0);
+          float fade = 1.0 - smoothstep(4.0, 40.0, d);
+          gl_FragColor = vec4(r * mix(0.1, 0.5, F) * fade * uOn, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+    });
+    const pad0 = new THREE.Mesh(new THREE.CylinderGeometry(7, 7, 0.1, 64), new THREE.MeshBasicMaterial({ color: 0x1f2226 }));
+    pad0.position.y = -0.06; this.floor.add(pad0);
+    const pad = new THREE.Mesh(new THREE.CircleGeometry(80, 128), floorMat);
+    pad.rotation.x = -Math.PI / 2; pad.position.y = 0.004; pad.renderOrder = 2; this.floor.add(pad);
+    this.clipFloor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     // a soft pool of light on the floor round the pad, so the rocket stands somewhere rather than in a void
     const pool = new THREE.Mesh(new THREE.CircleGeometry(60, 64), new THREE.MeshBasicMaterial({ map: spriteTex((g) => {
       const r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
@@ -636,6 +664,32 @@ export class Builder {
     if (this.needPlace) { this.needPlace = false; if (held) this.updatePlacement(); }
     if (this.sun.castShadow !== gfx.shadows > 0) this.fitShadow();
     applyTone(this.renderer, 1.1);
+    this.renderReflection(w, h);
     this.renderer.render(this.scene, this.camera);
+  }
+  // the rocket mirrored in the floor: render it from a camera reflected below the floor plane, clipped to what is
+  // above the floor, into a half-size target the floor shader samples projectively
+  renderReflection(w, h) {
+    const on = gfx.preset !== 'low';
+    this.reflU.uOn.value = on ? 1 : 0;
+    if (!on) return;
+    const r = this.renderer, y0 = this.floor.position.y, cam = this.camera, rc = this.reflCam;
+    const pr = r.getPixelRatio(), rw = Math.max(64, Math.round(w * pr * 0.5)), rh = Math.max(64, Math.round(h * pr * 0.5));
+    if (this.reflRT.width !== rw || this.reflRT.height !== rh) this.reflRT.setSize(rw, rh);
+    this.reflU.uTexel.value.set(1 / rw, 1 / rh);
+    rc.fov = cam.fov * 1.35; rc.aspect = w / h; rc.near = cam.near; rc.far = cam.far; rc.updateProjectionMatrix();
+    const tgt = this.cam.target;
+    rc.position.set(cam.position.x, 2 * y0 - cam.position.y, cam.position.z);
+    rc.up.set(0, 1, 0); rc.lookAt(tgt.x, 2 * y0 - tgt.y, tgt.z); rc.updateMatrixWorld();
+    this.reflU.uTexM.value.set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1).multiply(rc.projectionMatrix).multiply(rc.matrixWorldInverse);
+    const bg = this.scene.background, fog = this.scene.fog;
+    this.scene.background = null; this.scene.fog = null;
+    const hide = [this.floor, this.markGroup, this.hoverGroup]; const vis = hide.map((o) => o.visible); hide.forEach((o) => { o.visible = false; });
+    this.clipFloor.constant = -y0 + 0.01;
+    const clip = r.clippingPlanes; r.clippingPlanes = [this.clipFloor];
+    r.setRenderTarget(this.reflRT); r.setClearColor(0x000000, 0); r.clear(); r.render(this.scene, rc); r.setRenderTarget(null);
+    r.clippingPlanes = clip; r.setClearColor(0x000000, 1);
+    hide.forEach((o, i) => { o.visible = vis[i]; });
+    this.scene.background = bg; this.scene.fog = fog;
   }
 }

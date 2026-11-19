@@ -247,12 +247,12 @@ vec4 marchClouds(vec3 d, vec3 dF, vec3 cF, float b, float tEnd, float muV, out f
 vec3 shellVol(vec3 loc, float cov, float foot) {
   gFoot = max(1.0, foot * 1.5);
   float c = cov * 1.15 + cloudShape(loc);
-  float dd = smoothstep(0.38, 0.66, c);
+  float dd = smoothstep(0.34, 0.7, c);
   float det = textureLod(tNoise, loc * (1.0 / 1125.0) + 0.37, nLod(1125.0)).g;
-  dd = clamp((dd - (1.0 - det) * 0.45 * (1.0 - 0.6 * dd)) * 1.6, 0.0, 1.0);
+  dd = clamp((dd - (1.0 - det) * 0.4 * (1.0 - 0.6 * dd)) * 1.4, 0.0, 1.0);
   vec3 ls = loc + normalize(uSunF - normalize(uCamF) * dot(uSunF, normalize(uCamF))) * 700.0;
   float cs = cov * 1.15 + cloudShapeLo(ls);
-  return vec3(smoothstep(0.0, 0.6, dd), smoothstep(0.4, 0.62, cs), dd);
+  return vec3(smoothstep(0.0, 0.8, dd), smoothstep(0.4, 0.62, cs), dd);
 }
 
 // fields: a jittered grid of cells (Voronoi). Returns the distance to the nearest cell border (in cell
@@ -1150,9 +1150,11 @@ void main() {
       float self = cloudAlpha(textureLod(tData, lonlat(normalize(cnF + uSunF * 0.004)), 2.0).r, cnF + uSunF * 0.004, 1.0, 1e9);
       // near: shade the sides turned from the sun, and let thin edges show less bright top
       self = mix(self, sv.y * 0.9, nearK);
-      float thick = mix(1.0, 0.7 + 0.38 * sv.z, nearK);
+      float thick = mix(1.0, 0.84 + 0.2 * sv.z, nearK);
       float below = uCC < 0.0 ? 1.0 : 0.0;
-      float lit = (0.35 + 0.65 * max(muC, 0.0)) * (1.0 - 0.45 * self) * mix(1.0, 0.32 + 0.3 * (1.0 - a), below) * thick;
+      // cloud tops: multiple scattering inside the cloud sends most of the sunlight back up, so a sunlit top is
+      // nearly as bright at mid-morning as at noon; the shaded sides stay darker
+      float lit = (0.6 + 0.5 * max(muC, 0.0)) * (1.0 - 0.38 * self) * mix(1.0, 0.32 + 0.3 * (1.0 - a), below) * thick;
       float silver = pow(max(muV, 0.0), 12.0) * (1.0 - a) * 2.5;
       vec3 Eamb = uE * vec3(0.06, 0.09, 0.15) * smoothstep(-0.15, 0.3, muC) + uE * 0.0004;
       vec3 cc = 0.92 / PI * (uE * Tc * (lit + silver) + Eamb);

@@ -101,7 +101,9 @@ export function outputPass() {
     .replace('uniform sampler2D tDiffuse;', 'uniform sampler2D tDiffuse; uniform float uVib;')
     .replace(/(#ifdef SRGB_TRANSFER)/, `{ vec3 c = gl_FragColor.rgb; float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
         float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
-        gl_FragColor.rgb = max(mix(vec3(l), c, 1.0 + uVib * (1.0 - clamp(sat * 1.5, 0.0, 1.0))), 0.0); }
+        // bright near-whites (cloud, smoke, white paint) are left alone: boosting their faint tint turns them cream
+        float vk = uVib * (1.0 - clamp(sat * 1.5, 0.0, 1.0)) * (1.0 - smoothstep(0.45, 0.85, l));
+        gl_FragColor.rgb = max(mix(vec3(l), c, 1.0 + vk), 0.0); }
       $1`)
     .replace(/(#ifdef SRGB_TRANSFER[\s\S]*?#endif)/, `$1
       vec2 dq = gl_FragCoord.xy;
