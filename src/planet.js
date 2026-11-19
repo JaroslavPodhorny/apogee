@@ -736,7 +736,7 @@ void main() {
       cc *= 1.0 - 0.32 * (footA < 10.0 ? bDens : bushDensity(p)) * smoothstep(2.0, 10.0, footA);
       vec3 grassBase = cc;
       // farmland: farms (~1.5 km) share a field size and a few crops; fields inside them; hedges and lanes between
-      float farmK = farmMask(p, siteD) * (1.0 - smoothstep(0.08, 0.14, slope));
+      float farmK = farmMask(p, siteD) * (1.0 - smoothstep(0.08, 0.14, slope)) * smoothstep(0.1, 0.24, coastSP0 + (m2 - 0.5) * 0.08);   // the coast is dunes and scrub, not fields
       float hedgeT = 0.0, hedgeSh = 0.0;
       if (farmK > 0.0) {
         // farms: big irregular blocks (a strongly warped cellular pattern, so they never read as a honeycomb)
@@ -986,12 +986,33 @@ void main() {
     water = max(water, river);
     // shore: a narrow band of sand where land meets sea, turquoise shallows just offshore
     float beach = (ter ? mix(smoothstep(0.36, 0.43, wraw), smoothstep(0.02, 0.3, H) * smoothstep(2.8, 1.2, H) * smoothstep(0.18, 0.36, wraw), uTerK) : smoothstep(0.36, 0.43, wraw)) * (1.0 - water);
-    if (ter) beach = mix(beach, (1.0 - smoothstep(0.012, 0.03, coastSP0)) * (1.0 - water), uTerK);   // a narrow strand along the per-pixel coastline
+    if (ter) beach = mix(beach, (1.0 - smoothstep(0.02, 0.055, coastSP0 + (vnoise(vec3(sP / 260.0, 95.0), 0) - 0.5) * 0.02)) * (1.0 - water), uTerK);   // a strand along the coastline, wider here and there
     beach *= smoothstep(1300.0, 3500.0, siteD);      // the flattened launch area is all land: no strand flickering across it
-    alb = mix(alb, vec3(0.3, 0.26, 0.19) * (0.9 + 0.2 * tuft), beach * 0.75);
+    // pale dry sand up the beach, darker wet sand at the water's edge
+    vec3 sandC = mix(vec3(0.27, 0.23, 0.17), vec3(0.46, 0.41, 0.31), smoothstep(0.004, 0.018, coastSP0)) * (0.92 + 0.16 * tuft);
+    alb = mix(alb, sandC, beach * 0.9);
     float shallow = ter ? mix(1.0 - smoothstep(0.58, 0.9, wraw), smoothstep(-28.0, -1.0, H), uTerK) : 1.0 - smoothstep(0.58, 0.9, wraw);
     vec3 seaBase = ter ? mix(alb * 0.55, vec3(0.012, 0.03, 0.05), uTerK) : alb * 0.55;
     vec3 seaAlb = mix(seaBase, vec3(0.03, 0.11, 0.11), shallow * water * 0.85);
+    // Near the shore the sea is shallow enough to see the sandy bottom. Light going down to it and back is
+    // absorbed red-first (Beer–Lambert): a metre of water reads pale green-turquoise, five metres teal, twenty
+    // the open sea's blue. Sandbars run along the shore (isolines of the coast field), lifting the bottom in
+    // pale streaks, as from the air over any sandy coast.
+    float depthM = ter && river < 0.5 ? max(-H, 0.0) : 99.0, foam = 0.0;
+    if (depthM < 30.0 && siteD < 2e5) {
+      float wob = vnoise(vec3(sP / 380.0, 91.0), 0) - 0.5, wob2 = vnoise(vec3(sP / 95.0, 97.0), 0) - 0.5;
+      float bar = smoothstep(0.35, 0.95, 0.5 + 0.5 * sin(coastSP0 * 170.0 + wob * 7.0)) * smoothstep(0.6, 2.5, depthM) * (1.0 - smoothstep(6.0, 12.0, depthM));
+      float dEff = depthM * (1.0 - 0.55 * bar) * (1.0 + 0.25 * wob2);
+      vec3 Tw = exp(-2.0 * dEff * vec3(0.32, 0.07, 0.05) * 0.4);      // clear coastal water
+      vec3 bottom = vec3(0.4, 0.36, 0.27) * (0.85 + 0.3 * vnoise(vec3(sP / 30.0, 99.0), 0));
+      vec3 shallowAlb = bottom * Tw + vec3(0.006, 0.04, 0.05) * (1.0 - Tw.g);
+      seaAlb = mix(seaAlb, shallowAlb, water * uTerK * (1.0 - smoothstep(16.0, 30.0, depthM)));
+      // surf: breaking lines travelling shoreward along the isolines, broken up, and the swash at the edge
+      float ph = coastSP0 * 700.0 - uTime * 1.1 + wob * 9.0 + wob2 * 3.0;
+      float brk = smoothstep(0.82, 0.97, 0.5 + 0.5 * sin(ph)) * smoothstep(0.45, 0.75, vnoise(vec3(sP / 45.0 + vec2(uTime * 0.2, 0.0), 101.0), 0) + 0.25);
+      foam = brk * (1.0 - smoothstep(0.6, 3.0, depthM)) * smoothstep(0.05, 0.3, depthM) + (1.0 - smoothstep(0.0, 0.25, depthM)) * 0.7;
+      foam *= water * uTerK * smoothstep(3.0, 1.0, footA / 10.0 + 0.5) * smoothstep(1300.0, 3500.0, siteD);
+    }
     seaAlb = mix(seaAlb, vec3(0.06, 0.045, 0.028), river * (1.0 - step(0.5, dat.g)) * step(55000.0, siteD));      // tropical rivers carry silt
     // inland water: you see the murky, weedy bottom in the shallows at the margin, dark peaty water further in
     if (river > 0.0) {
@@ -1060,6 +1081,7 @@ void main() {
     float sh = 2.0 / (rough * rough) - 2.0;
     float spec = (sh + 8.0) / (8.0 * PI) * pow(max(dot(snrm, hv), 0.0), sh) * (0.02 + 0.98 * pow(1.0 - max(dot(hv, view), 0.0), 5.0));
     vec3 sea = seaAlb / PI * (uE * Tg * max(mu, 0.0) * cs * tSun + Eamb) + F * skyRef + uE * Tg * max(dot(snrm, uSunF), 0.0) * spec * cs * tSun;
+    sea = mix(sea, vec3(0.62, 0.64, 0.64) / PI * (uE * Tg * max(mu, 0.0) * cs * tSun + Eamb), clamp(foam, 0.0, 1.0));   // foam is white and matte
     col = mix(land, sea, water);
     // city lights on the night side
     float night = 1.0 - smoothstep(-0.08, 0.12, mu);
