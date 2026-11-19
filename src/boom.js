@@ -258,7 +258,7 @@ export class Booms {
       const near = this.list.find((b) => b.parts.length);
       const up = near ? near.fixed.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), th).normalize() : null;
       this.cloud.mat.uniforms.uSunCol.value.copy(sunCol); this.cloud.mat.uniforms.uAmb.value.copy(amb);
-      this.cloud.mat.uniforms.uSunV.value.copy(sunDir).transformDirection(camera.matrixWorldInverse);
+      this.cloud.mat.uniforms.uSunV.value.copy(sunDir).transformDirection(camera.matrixWorldInverse); this.cloud.sunW.copy(sunDir);
       const gd = up ? up.clone().multiplyScalar(pl.R).sub(origin).dot(up) : 0;
       this.cloud.drawRaw(items, origin, camera, up, gd);
     } else this.cloud.geo.instanceCount = 0;

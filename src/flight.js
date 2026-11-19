@@ -718,7 +718,7 @@ export class Flight {
         const sp = Math.max(er * 2, (Lfull - hn) * 0.25 + er * 2);
         const pos = g0.clone().addScaledVector(dir, sp * (0.8 + Math.random() * 0.6)).addScaledVector(up, er * (0.6 + Math.random() * 1.5));
         const vel = dir.multiplyScalar(25 + Math.random() * 30).addScaledVector(up, 1 + Math.random() * 7).add(air);
-        const id = this.smoke.emit(pos, vel, er * 3 + 2, (er * 10 + 24) * (0.55 + 0.45 * K) * (0.8 + Math.random() * 0.5), (24 + Math.random() * 20) * (0.8 + 0.2 * K), 0.8, g0, Math.min(1, 0.8 * (0.5 + 0.5 * pw)) * imp);
+        const id = this.smoke.emit(pos, vel, er * 3 + 2, (er * 10 + 24) * (0.55 + 0.45 * K) * (0.8 + Math.random() * 0.5), (24 + Math.random() * 20) * (0.8 + 0.2 * K), 0.8, g0, Math.min(1, 0.6 + 0.4 * pw) * imp);
         this.smoke.f[id * 10 + 8] = 1;     // already on the ground: it billows up from here
       }
     }
@@ -1077,6 +1077,10 @@ export class Flight {
       const day = THREE.MathUtils.smoothstep(up.dot(this.sunDir), -0.15, 0.3) * Math.max(0.05, 1 - vAlt / pl.atmTop);
       sm.uAmb.value.set(0.06, 0.09, 0.14).multiplyScalar(SUN_E * day + 0.01);
       sm.uSunV.value.copy(this.sunDir).transformDirection(cam.matrixWorldInverse);
+      this.smoke.sunW.copy(this.sunDir);
+      { const L = this.engineLight; this.smoke.flameOn = !!L && L.intensity > 0; if (this.smoke.flameOn) this.smoke.flameW.copy(L.position).add(this.origin); }
+      // light bounced up off the ground under the cloud: sunlit grass and sand, warm and dim
+      { const k = Math.max(0, up.dot(this.sunDir)) * SUN_E * 0.9 / Math.PI; sm.uGndCol.value.set(0.17 * T.r, 0.15 * T.g, 0.1 * T.b).multiplyScalar(k).addScaledVector(sm.uAmb.value, 0.15); }
       {
         const camAlt = cp.length() - pl.R;
         sunTransmittance(pl, camAlt, cp.clone().normalize().dot(this.sunDir), this.sunCol);
@@ -1084,7 +1088,7 @@ export class Flight {
         this.sun.update(cam, cp, this.sunDir, pl.R, this.sunCol, occ, THREE.MathUtils.clamp(1 - camAlt / pl.atmTop, 0, 1), this.terVis ?? 1);
       }
       this.smoke.update(this.paused ? 0 : this.simDt, pl, this.origin, cam, up, sPos.dot(up));
-      this.sparks.viewH = this.ph; this.sparks.budget = gfx.fx === 'low' ? 0.4 : 1;
+      this.sparks.viewH = this.ph; this.sparks.budget = gfx.fx === 'low' ? 0.4 : 1; this.smoke.setLite(gfx.fx === 'low');
       this.sparks.update(this.paused ? 0 : this.simDt, pl, this.origin, cam, a ? a.v : new THREE.Vector3(), 1 / 50);
       {
         const tr = this.terrain, th2 = theta;
