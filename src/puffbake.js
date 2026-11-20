@@ -5,22 +5,24 @@
 // when lit from each of six directions (±x, ±y, ±z in the sprite's own frame), with the light's own path through the
 // puff taken into account. A sprite then mixes the six by where the sun, the sky and the flame are: proper lit
 // flanks, shadowed creases and bright rims when back-lit, from any angle, at the cost of two texture reads.
-// Output: two RGBA atlases of 2×2 puffs. A = light from (+x, −x, +y) and alpha, B = light from (−y, +z, −z);
+// Output: two RGBA atlases of 4×2 puffs. A = light from (+x, −x, +y) and alpha, B = light from (−y, +z, −z);
 // +z faces the camera. Light values are stored as √ (more precision in the shadows) and un-premultiplied.
 // The bake is slow (seconds at a sharp size), so it is done offline: `node tools/bake-puffs.mjs` writes the atlases to
 // assets/smoke/ and the game loads them (loadPuffs).
 import * as THREE from '../vendor/three.module.js';
 
 export function bakePuffData(N = 256) {
-  const W = N * 2, A = new Uint8Array(W * W * 4), B = new Uint8Array(W * W * 4);
+  const W = N * 4, WH = N * 2, A = new Uint8Array(W * WH * 4), B = new Uint8Array(W * WH * 4);
   const V = N * N * N, rho = new Float32Array(V), px = new Float32Array(V), py = new Float32Array(V);
   let s = 23; const R = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
   const dir = () => { let x, y, z, l; do { x = R() * 2 - 1; y = R() * 2 - 1; z = R() * 2 - 1; l = x * x + y * y + z * z; } while (l > 1 || l < 0.01); l = Math.sqrt(l); return [x / l, y / l, z / l]; };
   const SIG = 80, SIGL = 40, dx = 1 / N;   // extinction per sprite width: the body is opaque, the lobes' rims are not
-  for (let v = 0; v < 4; v++) {
+  for (let v = 0; v < 8; v++) {
     // ---- shape: spheres in sprite units (the quad spans −0.5…0.5) ----
-    const cores = [];
-    for (let i = 0; i < 2; i++) cores.push([(R() - 0.5) * 0.1, (R() - 0.5) * 0.06 - 0.05, (R() - 0.5) * 0.1, 0.15 + R() * 0.04]);
+    // eight builds, so no two neighbouring puffs look alike: one to three cores, some spread wide and low (smoke rolling
+    // along), some stacked taller (a billow rising), some a tight lumpy knot
+    const cores = [], nc = 1 + (v % 3), wide = v % 2 === 0 ? 0.24 : 0.1, tall = v % 4 === 3 ? 0.12 : 0.05;
+    for (let i = 0; i < nc; i++) cores.push([(R() - 0.5) * wide, (R() - 0.5) * tall - 0.05, (R() - 0.5) * 0.1, (nc === 1 ? 0.17 : 0.13) + R() * 0.04]);
     // no big ball in the middle: a cluster of lobes, each sitting well out of its parent, favouring the top and the
     // sides (a puff boils up and out, its belly is smoother); each generation about 2× smaller and 3–4× as many
     const grow = (par, n, r0, r1) => {
@@ -34,7 +36,7 @@ export function bakePuffData(N = 256) {
       }
       return out;
     };
-    const L1 = grow(cores, 10, 0.1, 0.16), L2 = grow(L1, 40, 0.045, 0.075), L3 = grow(L2, 130, 0.02, 0.033);
+    const L1 = grow(cores, 7 + (v * 3) % 7, 0.09, 0.16), L2 = grow(L1, 32 + (v * 7) % 18, 0.04, 0.075), L3 = grow(L2, 110 + (v * 13) % 50, 0.018, 0.033);
     // union of the lobes (sharp creases between them, as in real billows); the lookup point is warped a little so
     // no lobe is a perfect ball
     rho.fill(0);
@@ -54,7 +56,7 @@ export function bakePuffData(N = 256) {
     for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) { let a = 0; const b = (z * N + y) * N; for (let x = 0; x < N; x++) { px[b + x] = a; a += rho[b + x]; } }
     for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) { let a = 0; for (let y = 0; y < N; y++) { const i = (z * N + y) * N + x; py[i] = a; a += rho[i]; } }
     // ---- march every pixel from the camera (+z) into the puff ----
-    const ox = (v % 2) * N, oy = (v >> 1) * N;
+    const ox = (v % 4) * N, oy = (v >> 2) * N;
     // light scattered many times inside goes deeper than one bounce says: a softer second term keeps shadows from going black
     const T = (od) => 0.72 * Math.exp(-SIGL * dx * od) + 0.28 * Math.exp(-SIGL * 0.2 * dx * od);
     for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
@@ -84,18 +86,18 @@ export function bakePuffData(N = 256) {
   // empty texels take their neighbours' light, a few texels deep, so filtering and mipmaps never pull a dark fringe in
   for (let pass = 0; pass < 6; pass++) {
     const src = [A.slice(), B.slice()];
-    for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
+    for (let y = 0; y < WH; y++) for (let x = 0; x < W; x++) {
       const o = (y * W + x) * 4; if (src[0][o + 3] > 0 || src[0][o] > 0) continue;
       let n = 0; const acc = [0, 0, 0, 0, 0, 0];
       for (const [qx, qy] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
-        if (qx < 0 || qy < 0 || qx >= W || qy >= W || (qx / N | 0) !== (x / N | 0) || (qy / N | 0) !== (y / N | 0)) continue;
+        if (qx < 0 || qy < 0 || qx >= W || qy >= WH || (qx / N | 0) !== (x / N | 0) || (qy / N | 0) !== (y / N | 0)) continue;
         const q = (qy * W + qx) * 4; if (src[0][q + 3] === 0 && src[0][q] === 0) continue;
         n++; acc[0] += src[0][q]; acc[1] += src[0][q + 1]; acc[2] += src[0][q + 2]; acc[3] += src[1][q]; acc[4] += src[1][q + 1]; acc[5] += src[1][q + 2];
       }
       if (n) { A[o] = acc[0] / n; A[o + 1] = acc[1] / n; A[o + 2] = acc[2] / n; B[o] = acc[3] / n; B[o + 1] = acc[4] / n; B[o + 2] = acc[5] / n; }
     }
   }
-  return { A, B, W };
+  return { A, B, W, H: WH };
 }
 
 // The baked atlases, as textures. Decoded without premultiplying alpha and without colour conversion: the light values

@@ -72,7 +72,7 @@ export class Smoke {
     const attr = (n) => { const a = new THREE.InstancedBufferAttribute(new Float32Array(MAX * n), n); a.setUsage(THREE.DynamicDrawUsage); return a; };
     g.setAttribute('iPos', (this.aPos = attr(3)));
     g.setAttribute('iData', (this.aData = attr(4))); // size, alpha, heat, rotation
-    g.setAttribute('iVar', (this.aVar = attr(1)));  // atlas cell (0-3) + 4 × soot (0-7) + 32 × detail seed (0-63)
+    g.setAttribute('iVar', (this.aVar = attr(1)));  // atlas cell (0-7) + 8 × soot (0-7) + 64 × detail seed (0-63)
     g.setAttribute('iLit', (this.aLit = attr(3)));
     g.setAttribute('iVel', (this.aVel = attr(3)));  // velocity through the air (m/s, planet frame): fast puffs stretch along it  // light reaching the puff through the rest of the smoke: sun, sky, flame
     g.instanceCount = 0;
@@ -100,10 +100,10 @@ export class Smoke {
           if (sl > 0.5) { vec2 sd = sv / sl; q += sd * dot(q, sd) * min(1.3, sl * 0.014); }
           mv.xy += q * iData.x;
           vUv = m * position.xy + 0.5;
-          float seed = floor(iVar / 32.0 + 0.01); vOff = vec2(fract(seed * 0.618), fract(seed * 0.382 + 0.25));
+          float seed = floor(iVar / 64.0 + 0.01); vOff = vec2(fract(seed * 0.618), fract(seed * 0.382 + 0.25));
           vDet = clamp(iData.x / 18.0, 0.5, 12.0);   // fine bumps about 3–4 m across, whatever the puff's size
-          float cell = mod(iVar, 4.0); vCell = vec2(mod(cell, 2.0), floor(cell / 2.0)) * 0.5;
-          vSoot = mod(floor(iVar / 4.0 + 0.01), 8.0) / 7.0;
+          float cell = mod(iVar, 8.0); vCell = vec2(mod(cell, 4.0) * 0.25, floor(cell / 4.0) * 0.5);   // eight puffs, 4 × 2
+          vSoot = mod(floor(iVar / 8.0 + 0.01), 8.0) / 7.0;
           // the sun, the sky's zenith and the flame, in the puff's own (rotated) frame: +z toward the camera
           vSunS = vec3(m * uSunV.xy, uSunV.z); vUpS = vec3(m * uUpV.xy, uUpV.z);
           vec3 fd = normalize(dF + vec3(0.0, 0.0, 1e-3)); vFdS = vec3(m * fd.xy, fd.z);
@@ -119,7 +119,7 @@ export class Smoke {
         float six(vec3 L) { vec3 p = max(L, 0.0), n = max(-L, 0.0); p *= p; n *= n; return dot(lA, vec3(p.x, n.x, p.y)) + dot(lB, vec3(n.y, p.z, n.z)); }
         float hg(float g, float c) { float k = 1.0 + g * g - 2.0 * g * c; return (1.0 - g * g) / (k * sqrt(k)); }
         void main() {
-          vec2 uv = vCell + clamp(vUv, 0.002, 0.998) * 0.5;
+          vec2 uv = vCell + clamp(vUv, 0.002, 0.998) * vec2(0.25, 0.5);
           vec4 A = texture2D(tA, uv);
           if (A.a < 0.01 || vA < 0.004) discard;
           // stylised fine detail: two octaves of small cauliflower bumps in metres. They nibble the soft rim into crisp
@@ -458,7 +458,7 @@ export class Smoke {
       Ve[s * 3] = v[k] - om * p[k + 2]; Ve[s * 3 + 1] = v[k + 1]; Ve[s * 3 + 2] = v[k + 2] + om * p[k];   // less the planet's turning air
       D[s * 4 + 2] = f[j + 4] * Math.exp(-age * (this.q[i * 2] > 0 ? 5 : f[j + 8] > 0 ? 1.4 : 4));   // launch-cloud steam glows only as it leaves the fire
       D[s * 4 + 3] = f[j + 5] * 6.2832 + age * f[j + 7];
-      Vv[s] = Math.floor(f[j + 5] * 4) % 4 + 4 * this.soot[i] + 32 * (Math.floor(f[j + 5] * 256) % 64);
+      Vv[s] = Math.floor(f[j + 5] * 8) % 8 + 8 * this.soot[i] + 64 * (Math.floor(f[j + 5] * 256) % 64);
     }
     this.geo.instanceCount = nd;
     for (const a of [this.aPos, this.aData, this.aVar, this.aLit, this.aVel]) { a.needsUpdate = true; a.clearUpdateRanges(); a.addUpdateRange(0, Math.max(1, nd) * a.itemSize); }
