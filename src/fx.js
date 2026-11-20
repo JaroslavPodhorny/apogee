@@ -7,10 +7,10 @@
 //   shadowed sides take the sky colour, fresh exhaust glows from the flame.
 // Positions live in the planet-centred frame (doubles) and are drawn relative to the floating origin.
 import * as THREE from '../vendor/three.module.js';
-import { bakePuffs } from './puffbake.js';
+import { bakePuffs, detailTex } from './puffbake.js';
 
 const MAX_DEFAULT = 2400;
-let puffs = null; const PUFFS = () => (puffs ||= bakePuffs());   // baked once, shared by every smoke system
+let puffs = null; const PUFFS = () => (puffs ||= { ...bakePuffs(), det: detailTex() });   // baked once, shared by every smoke system
 
 // A sparse 3D grid of smoke density (open-addressed hash on integer cells), rebuilt every frame from the puffs.
 // Puffs are splatted trilinearly into the lattice; lookups take the nearest lattice point.
@@ -73,27 +73,34 @@ export class Smoke {
     g.setAttribute('iPos', (this.aPos = attr(3)));
     g.setAttribute('iData', (this.aData = attr(4))); // size, alpha, heat, rotation
     g.setAttribute('iVar', (this.aVar = attr(1)));  // atlas cell (0-3) + 4 × soot (0-7) + 32 × detail seed (0-63)
-    g.setAttribute('iLit', (this.aLit = attr(3)));  // light reaching the puff through the rest of the smoke: sun, sky, flame
+    g.setAttribute('iLit', (this.aLit = attr(3)));
+    g.setAttribute('iVel', (this.aVel = attr(3)));  // velocity through the air (m/s, planet frame): fast puffs stretch along it  // light reaching the puff through the rest of the smoke: sun, sky, flame
     g.instanceCount = 0;
     this.mat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false,
       uniforms: {
-        tA: { value: PUFFS().A }, tB: { value: PUFFS().B }, uGndCol: { value: new THREE.Vector3(0.05, 0.045, 0.035) }, uSunCol: { value: new THREE.Vector3(1, 1, 1) }, uAmb: { value: new THREE.Vector3(0.2, 0.2, 0.25) },
+        tA: { value: PUFFS().A }, tB: { value: PUFFS().B }, tDet: { value: PUFFS().det }, uGndCol: { value: new THREE.Vector3(0.05, 0.045, 0.035) }, uSunCol: { value: new THREE.Vector3(1, 1, 1) }, uAmb: { value: new THREE.Vector3(0.2, 0.2, 0.25) },
         uSunV: { value: new THREE.Vector3(0, 1, 0) }, uUpV: { value: new THREE.Vector3(0, 1, 0) }, uGroundD: { value: -1e9 }, uFlameV: { value: new THREE.Vector3() }, uFlameI: { value: 0 }, uFlameCol: { value: new THREE.Color(1, 0.55, 0.2) }, uTint: { value: new THREE.Color(1, 1, 1) }, uHeatCol: { value: new THREE.Color(1, 0.32, 0.06) },
       },
       vertexShader: /* glsl */`
-        attribute vec3 iPos; attribute vec4 iData; attribute float iVar; attribute vec3 iLit;
+        attribute vec3 iPos; attribute vec4 iData; attribute float iVar; attribute vec3 iLit, iVel;
         uniform vec3 uSunV, uUpV, uFlameV; uniform float uGroundD, uFlameI;
-        varying vec2 vUv, vCell; varying float vA, vH, vGround, vSoot; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
+        varying vec2 vUv, vCell, vOff; varying float vA, vH, vGround, vSoot, vDet; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
         void main() {
           vec4 mv = modelViewMatrix * vec4(iPos, 1.0);
           // the flame lights the smoke round the pad: the 1/d² of a point light, softened by the puff's own size
           vec3 dF = uFlameV - mv.xyz; float d2 = dot(dF, dF);
-          vFl = uFlameI / (d2 * 0.7 + iData.x * iData.x * 0.08 + 1.0) * exp(-sqrt(d2) / 60.0);   // the steam itself scatters the glow away: it stays round the base
+          vFl = uFlameI / (d2 * 0.7 + iData.x * iData.x * 0.08 + 1.0) * exp(-sqrt(d2) / 45.0);   // the steam itself scatters the glow away: it stays round the base
           vFl /= 1.0 + vFl * 0.05;   // soft cap: right by the flame it would burn out to flat white
           float c = cos(iData.w), s = sin(iData.w); mat2 m = mat2(c, -s, s, c);
-          mv.xy += position.xy * iData.x;
+          // a puff racing along stretches out along its path on screen, so a jet reads as one flowing stream
+          vec2 sv = (modelViewMatrix * vec4(iVel, 0.0)).xy; float sl = length(sv);
+          vec2 q = position.xy;
+          if (sl > 0.5) { vec2 sd = sv / sl; q += sd * dot(q, sd) * min(1.3, sl * 0.014); }
+          mv.xy += q * iData.x;
           vUv = m * position.xy + 0.5;
+          float seed = floor(iVar / 32.0 + 0.01); vOff = vec2(fract(seed * 0.618), fract(seed * 0.382 + 0.25));
+          vDet = clamp(iData.x / 18.0, 0.5, 12.0);   // fine bumps about 3–4 m across, whatever the puff's size
           float cell = mod(iVar, 4.0); vCell = vec2(mod(cell, 2.0), floor(cell / 2.0)) * 0.5;
           vSoot = mod(floor(iVar / 4.0 + 0.01), 8.0) / 7.0;
           // the sun, the sky's zenith and the flame, in the puff's own (rotated) frame: +z toward the camera
@@ -104,8 +111,8 @@ export class Smoke {
           gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: /* glsl */`
-        uniform sampler2D tA, tB; uniform vec3 uSunCol, uAmb, uSunV, uGndCol, uFlameCol, uTint, uHeatCol;
-        varying vec2 vUv, vCell; varying float vA, vH, vGround, vSoot; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
+        uniform sampler2D tA, tB, tDet; uniform vec3 uSunCol, uAmb, uSunV, uGndCol, uFlameCol, uTint, uHeatCol;
+        varying vec2 vUv, vCell, vOff; varying float vA, vH, vGround, vSoot, vDet; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
         vec3 lA, lB;
         // the baked puff lit from direction L (toward the light): the six lightings, weighted by L's components squared
         float six(vec3 L) { vec3 p = max(L, 0.0), n = max(-L, 0.0); p *= p; n *= n; return dot(lA, vec3(p.x, n.x, p.y)) + dot(lB, vec3(n.y, p.z, n.z)); }
@@ -113,8 +120,17 @@ export class Smoke {
         void main() {
           vec2 uv = vCell + clamp(vUv, 0.002, 0.998) * 0.5;
           vec4 A = texture2D(tA, uv);
-          float a = A.a * vA * smoothstep(0.0, 1.0, clamp(vGround, 0.0, 1.0));
+          if (A.a < 0.01 || vA < 0.004) discard;
+          // stylised fine detail: two octaves of small cauliflower bumps in metres. They nibble the soft rim into crisp
+          // little lobes (the solid body keeps its baked outline) and bump the light below
+          vec2 du = (vUv - 0.5) * vDet + vOff;
+          vec4 q1 = texture2D(tDet, du), q2 = texture2D(tDet, du * 2.37 + 0.31);
+          float hd = q1.r * 0.65 + q2.r * 0.35;
+          float rim = 1.0 - smoothstep(0.45, 0.95, A.a);
+          float al = clamp((A.a + (hd - 0.42) * 0.9 * rim - 0.06) * 1.25, 0.0, 1.0);
+          float a = al * vA * smoothstep(0.0, 1.0, clamp(vGround, 0.0, 1.0));
           if (a < 0.003) discard;
+          vec2 gd = (q1.gb - 0.5) * 0.65 + (q2.gb - 0.5) * 0.35 * 2.37;   // the bumps' slope, in the puff's own frame
           vec4 B = texture2D(tB, uv);
           lA = A.rgb * A.rgb; lB = B.rgb * B.rgb;
           // large scale: the light that got here through the rest of the cloud (CPU-marched, per puff); a softer copy
@@ -123,14 +139,16 @@ export class Smoke {
           float sunT = Ts * 0.75 + 0.25 * pow(Ts, 0.3) * 0.5;
           // forward scattering: thin rims blaze when the sun is behind the smoke
           float cs = -uSunV.z, phase = 0.8 * hg(0.05, cs) + 0.2 * hg(0.6, cs);
-          vec3 sun = uSunCol * sunT * six(vSunS) * min(phase, 4.0) * 1.3;
+          float bump = clamp(1.0 - dot(gd, vSunS.xy) * 2.6, 0.3, 1.8);          // each bump lit on its sunward side
+          float crease = 0.5 + 0.5 * smoothstep(0.12, 0.7, hd);                // and dark in the creases between them
+          vec3 sun = uSunCol * sunT * six(vSunS) * min(phase, 4.0) * 1.9 * bump * crease;   // (the baked puffs average darker than a matte ball: match the sky's clouds)
           float side = (lA.r + lA.g + lB.g + lB.b) * 0.25;
-          vec3 sky = uAmb * (0.2 + 0.8 * Tk) * (0.6 * six(vUpS) + 0.4 * side);
+          vec3 sky = uAmb * (0.2 + 0.8 * Tk) * (0.6 * six(vUpS) + 0.4 * side) * crease;
           vec3 gnd = uGndCol * six(-vUpS) * (0.4 + 0.6 * Tk);
           // sooty smoke (burning propellant) is dark grey-brown, exhaust and steam white
           vec3 alb = uTint * mix(vec3(0.96, 0.95, 0.94), vec3(0.11, 0.1, 0.09), vSoot);
           // dust: where the cloud scours the ground it carries sand up into its lowest parts
-          alb *= mix(vec3(0.86, 0.78, 0.68), vec3(1.0), smoothstep(0.6, 3.0, vGround));
+          alb *= mix(vec3(0.9, 0.84, 0.76), vec3(1.0), smoothstep(0.2, 1.2, vGround));
           vec3 col = 0.95 / 3.14159 * (sun + sky + gnd) * alb;
           // glowing exhaust: yellow-white where it is hottest, deep orange as it cools
           col += mix(uHeatCol, vec3(1.0, 0.72, 0.35), vH) * vH * vH * 3.0;
@@ -186,8 +204,12 @@ export class Smoke {
   // fills out the cloud, it never turns into a smooth ball
   sizeOf(i, age) {
     const f = this.f, j = i * 10;
-    return this.q[i * 2] > 0 ? f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-age * 0.45)) + age * 0.9
-      : f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-age * 1.6)) + age * 0.35;
+    if (this.q[i * 2] > 0) {
+      // a ground jet widens as it goes (it pulls in the air round it): the farther from the pad, the bigger
+      const k = i * 3, dx = this.p[k] - this.e[k], dy = this.p[k + 1] - this.e[k + 1], dz = this.p[k + 2] - this.e[k + 2];
+      return f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-age * 0.45)) + age * 0.35 + Math.sqrt(dx * dx + dy * dy + dz * dz) * 0.13;
+    }
+    return f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-age * 1.6)) + age * 0.35;
   }
   // Lay puffs evenly along the path the nozzle took through the air since last frame.
   // o: { size0, size1, life, opacity, push (m/s out of the nozzle), spacing (m), minRate (/s) }
@@ -392,19 +414,20 @@ export class Smoke {
     for (let i = 0; i < n; i++) { const k = i * 3, dx = p[k] - cx, dy = p[k + 1] - cy, dz = p[k + 2] - cz; depth[i] = dx * dx + dy * dy + dz * dz; ord.push(i); }
     ord.sort((a, b) => depth[b] - depth[a]);
     const nd = ord.length;
-    const P = this.aPos.array, D = this.aData.array, Vv = this.aVar.array, L = this.aLit.array;
+    const P = this.aPos.array, D = this.aData.array, Vv = this.aVar.array, L = this.aLit.array, Ve = this.aVel.array;
     for (let s = 0; s < nd; s++) {
       const i = ord[s], k = i * 3, j = i * 10, age = f[j];
       P[s * 3] = p[k] - origin.x; P[s * 3 + 1] = p[k + 1] - origin.y; P[s * 3 + 2] = p[k + 2] - origin.z;
       D[s * 4] = sz[i];
       D[s * 4 + 1] = al[i];
       L[s * 3] = this.lit[i * 3]; L[s * 3 + 1] = this.lit[i * 3 + 1]; L[s * 3 + 2] = this.lit[i * 3 + 2];
-      D[s * 4 + 2] = f[j + 4] * Math.exp(-age * (f[j + 8] > 0 ? 1.4 : 4));
+      Ve[s * 3] = v[k] - om * p[k + 2]; Ve[s * 3 + 1] = v[k + 1]; Ve[s * 3 + 2] = v[k + 2] + om * p[k];   // less the planet's turning air
+      D[s * 4 + 2] = f[j + 4] * Math.exp(-age * (this.q[i * 2] > 0 ? 5 : f[j + 8] > 0 ? 1.4 : 4));   // launch-cloud steam glows only as it leaves the fire
       D[s * 4 + 3] = f[j + 5] * 6.2832 + age * f[j + 7];
       Vv[s] = Math.floor(f[j + 5] * 4) % 4 + 4 * this.soot[i] + 32 * (Math.floor(f[j + 5] * 256) % 64);
     }
     this.geo.instanceCount = nd;
-    for (const a of [this.aPos, this.aData, this.aVar, this.aLit]) { a.needsUpdate = true; a.clearUpdateRanges(); a.addUpdateRange(0, Math.max(1, nd) * a.itemSize); }
+    for (const a of [this.aPos, this.aData, this.aVar, this.aLit, this.aVel]) { a.needsUpdate = true; a.clearUpdateRanges(); a.addUpdateRange(0, Math.max(1, nd) * a.itemSize); }
     // ground plane in view space, for the soft fade where puffs meet it
     const u = this.mat.uniforms, vm = camera.matrixWorldInverse;
     const FL = this.flameLight;

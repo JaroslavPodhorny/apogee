@@ -720,7 +720,8 @@ export class Flight {
       // channel in a racing ground jet; the rest bursts out round the pad in a few great lobes (set once per
       // launch). The jets brake within a couple of hundred metres and, where they stall, the hot steam climbs
       // in towers. Bigger engines throw it faster and farther and make more of it.
-      const K = THREE.MathUtils.clamp(Math.sqrt(p.def.engine.thrust / 1e6), 0.6, 2.6), sk = Math.sqrt(K);
+      // (puffs scale with the engine, and a small one makes proportionally more of them: the cloud stays one mass at any scale)
+      const K = THREE.MathUtils.clamp(Math.sqrt(p.def.engine.thrust / 1e6), 0.3, 2.6), sk = Math.pow(K, 0.7);
       const sUp = this.world.siteDir(), sE = new THREE.Vector3().crossVectors(Y_AXIS, sUp).normalize();
       const chan = new THREE.Vector3().crossVectors(sE, sUp).negate();      // the flame channel leads the exhaust this way
       let lobes = this.padLobes;
@@ -729,29 +730,38 @@ export class Flight {
         // towers: where each jet runs out of push the hot steam piles up and climbs; the flame channel's jet runs
         // farthest and raises the biggest. A couple more stand close in, over the deluge
         const site = (a, dist, rad, str) => { const pt = g0.clone().addScaledVector(chan.clone().applyAxisAngle(up, a), dist); this.smoke.towers.push(...this.smoke.toGround(pt), rad, str); };
-        const reach = 0.7 + 0.3 * K;
+        const reach = 0.5 + 0.5 * K;
         site((Math.random() - 0.5) * 0.3, (150 + 60 * Math.random()) * reach, 55 * reach, 6);
         for (const a of lobes) site(a + (Math.random() - 0.5) * 0.3, (90 + 60 * Math.random()) * reach, (35 + 15 * Math.random()) * reach, 3.5 + 3 * Math.random());
         for (let t = 0; t < 2; t++) site(Math.random() * 6.28, (30 + 40 * Math.random()) * reach, 30 * reach, 2.5);
       }
-      const rate = 170 * imp * (0.35 + 0.65 * pw) * (solid ? 1.25 : 1) * (0.6 + 0.4 * K) * (gfx.fx === 'low' ? 0.45 : 1);
+      const rate = 280 * imp * (0.45 + 0.55 * pw) * (solid ? 1.2 : 1) * (K / (sk * sk)) * (gfx.fx === 'low' ? 0.5 : 1);
       const n = Math.min(40, Math.floor((this.billowAcc = (this.billowAcc || 0) + this.simDt * rate)));
       this.billowAcc -= n;
-      const dir = new THREE.Vector3();
+      const dir = new THREE.Vector3(), sp = Math.max(er * 2, (Lfull - hn) * 0.2 + er * 2), op = Math.min(1, 0.85 + 0.15 * pw) * imp;
       for (let i = 0; i < n; i++) {
-        const r = Math.random(), inChan = r < 0.42;
+        const r = Math.random(), s0 = (6 + 4 * Math.random()) * sk;
+        if (r < 0.3) {
+          // the source: where the exhaust hits the pad, a dense boiling mass, lit from inside by the fire, that the
+          // jets pour out of (without it the splash is a hole and the jets look like puffs fired from the engine)
+          dir.copy(chan).applyAxisAngle(up, Math.random() * 6.2832);
+          const pos = g0.clone().addScaledVector(dir, sp * Math.random() * 0.9).addScaledVector(up, 1 + Math.random() * (sp * 0.6 + er));
+          const vel = dir.clone().multiplyScalar(5 + 14 * Math.random()).addScaledVector(up, 2 + 7 * Math.random()).add(air);
+          const id = this.smoke.emit(pos, vel, s0 * 1.2, s0 * (1.9 + 0.6 * Math.random()), (14 + Math.random() * 10) * (0.8 + 0.2 * K), 1, g0, op);
+          this.smoke.pad(id, 0.9 + 0.6 * Math.random(), 2 + 2 * Math.random());
+          continue;
+        }
+        const inChan = r < 0.62;
         if (inChan) dir.copy(chan).applyAxisAngle(up, (Math.random() + Math.random() - 1) * 0.28);
         else {
-          const a = r < 0.9 ? lobes[Math.floor(Math.random() * 4)] + (Math.random() - 0.5) * 0.7 : Math.random() * Math.PI * 2;
+          const a = r < 0.94 ? lobes[Math.floor(Math.random() * 4)] + (Math.random() - 0.5) * 0.7 : Math.random() * Math.PI * 2;
           dir.copy(chan).applyAxisAngle(up, a);
         }
-        // born at the edge of the splash, racing outward along the ground, hot and lit by the flame
-        const sp = Math.max(er * 2, (Lfull - hn) * 0.2 + er * 2);
-        const pos = g0.clone().addScaledVector(dir, sp * (0.6 + Math.random() * 0.8)).addScaledVector(up, er * (0.3 + Math.random()) + 1);
-        const v0 = (28 + 34 * Math.random()) * (0.7 + 0.3 * K) * (inChan ? 1.35 : 1);
+        // the jets: out of the source mass, racing outward along the ground, hot and lit by the flame
+        const pos = g0.clone().addScaledVector(dir, sp * (0.2 + Math.random() * 0.6)).addScaledVector(up, er * (0.3 + Math.random()) + 1);
+        const v0 = (28 + 34 * Math.random()) * (0.55 + 0.45 * K) * (inChan ? 1.35 : 1);
         const vel = dir.clone().multiplyScalar(v0).addScaledVector(up, Math.random() * 6).add(air);
-        const s0 = (7 + 5 * Math.random()) * sk;
-        const id = this.smoke.emit(pos, vel, s0, s0 * (1.6 + 0.6 * Math.random()), (26 + Math.random() * 22) * (0.8 + 0.2 * K), 0.8, g0, Math.min(1, 0.6 + 0.4 * pw) * imp);
+        const id = this.smoke.emit(pos, vel, s0, s0 * (1.6 + 0.6 * Math.random()), (26 + Math.random() * 22) * (0.8 + 0.2 * K), 0.8, g0, op);
         this.smoke.pad(id, 0.45 + 0.4 * Math.random(), (1.5 + 3 * Math.random()) * (0.8 + 0.2 * K));
       }
     }

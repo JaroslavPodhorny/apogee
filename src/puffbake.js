@@ -96,3 +96,32 @@ export function bakePuffs(N = 160) {
   const tex = (d) => { const t = new THREE.DataTexture(d, W, W); t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.generateMipmaps = true; t.needsUpdate = true; return t; };
   return { A: tex(A), B: tex(B) };
 }
+
+// Fine detail laid over the baked puffs (stylised, not simulated): a tileable field of small cauliflower domes with
+// deep creases between them. R = height, G/B = its slope. Puffs use it in metres, so the bumps stay a few metres
+// across at any puff size: they bump the lighting and nibble the soft rims into crisp little lobes.
+export function detailTex() {
+  const n = 256, hgt = new Float32Array(n * n);
+  let s = 5; const R = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+  for (const [f, w] of [[5, 0.58], [11, 0.3], [23, 0.12]]) {
+    const pts = new Float32Array(f * f * 2); for (let i = 0; i < f * f * 2; i++) pts[i] = R();
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const u = x / n * f, v = y / n * f, cx = Math.floor(u), cy = Math.floor(v);
+      let d1 = 9;
+      for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+        const gx = cx + i, gy = cy + j, k = (((gy % f) + f) % f) * f + (((gx % f) + f) % f);
+        const dx = gx + pts[k * 2] - u, dy = gy + pts[k * 2 + 1] - v; d1 = Math.min(d1, dx * dx + dy * dy);
+      }
+      hgt[y * n + x] += w * Math.sqrt(Math.max(0, 1 - d1 / 0.36));   // a dome over each cell point, deep creases between them
+    }
+  }
+  const data = new Uint8Array(n * n * 4);
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const i = y * n + x, h = hgt[i];
+    const gx = (hgt[y * n + ((x + 1) % n)] - hgt[y * n + ((x + n - 1) % n)]) * n / 2, gy = (hgt[((y + 1) % n) * n + x] - hgt[((y + n - 1) % n) * n + x]) * n / 2;
+    data[i * 4] = Math.min(255, h * 255); data[i * 4 + 1] = Math.max(0, Math.min(255, 128 + gx)); data[i * 4 + 2] = Math.max(0, Math.min(255, 128 + gy)); data[i * 4 + 3] = 255;
+  }
+  const t = new THREE.DataTexture(data, n, n); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.generateMipmaps = true; t.needsUpdate = true;
+  return t;
+}
