@@ -222,6 +222,8 @@ export class Smoke {
     this.depth = new Float32Array(MAX); this.soot = new Uint8Array(MAX);
     // volumetric light: every puff's transmittance toward the sun and the open sky, through all the other smoke
     this.lit = new Float32Array(MAX * 3); this.sz = new Float32Array(MAX); this.al = new Float32Array(MAX);
+    this.vw = new Float32Array(MAX);   // how much of each puff the volume (smokevol.js) draws instead of its sprite
+    this.vol = null;                   // set by the owner when the volumetric cloud is on
     this.fine = new DensityGrid(6); this.coarse = new DensityGrid(24, 15); this.litPhase = 0;
     this.sunW = new THREE.Vector3(0, 1, 0);   // set by the owner: the sun's direction in the planet frame
     this.flameW = new THREE.Vector3(); this.flameOn = false;   // and where the engines' light comes from
@@ -366,7 +368,10 @@ export class Smoke {
       const ax = om * z + ex * we + nx * wn + ux * wu, ay = ny * wn + uy * wu, az = -om * x + ez * we + nz * wn + uz * wu;
       const dk = f[j + 9] > 0 ? 1 - Math.exp(-dt * (0.9 + 6 * Math.exp(-f[j] * 3))) : damp;   // jet-carried exhaust brakes hard at first
       v[k] += (ax - v[k]) * dk; v[k + 1] += (ay - v[k + 1]) * dk; v[k + 2] += (az - v[k + 2]) * dk;
-      const lift = (0.8 + 3.2 * f[j + 8]) * dt * Math.exp(-f[j] * (f[j + 8] > 0 ? 0.12 : 0.08));
+      // buoyancy: hot steam off the pad rises hard, and unevenly: a few puffs carry a lot more heat and build the
+      // towering columns of a real launch cloud, the rest roll out low along the ground
+      const hot = f[j + 8] > 0 ? 2.5 + 11 * Math.pow((f[j + 5] * 7.31) % 1, 3) : 0.8;
+      const lift = hot * dt * Math.exp(-f[j] * (f[j + 8] > 0 ? 0.1 : 0.08));
       v[k] += ux * lift; v[k + 1] += uy * lift; v[k + 2] += uz * lift;
       // reaching the ground: turn downward motion into a spread outward from where it was emitted
       const size = f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-f[j] * 1.6)) + f[j] * 0.35;
@@ -408,24 +413,27 @@ export class Smoke {
       al[i] = fi * fi * (3 - 2 * fi) * fo * fo * 0.7 * f[j + 6];
     }
     this.light(n, this.p, sz, al, this.lit);
+    if (this.vol && this.vol.ready) this.vol.collect(this, n); else { this.vw.fill(0, 0, n); if (this.vol) this.vol.n = 0; }
     // draw back to front so overlapping puffs never swap
     const cx = camera.position.x + origin.x, cy = camera.position.y + origin.y, cz = camera.position.z + origin.z, depth = this.depth;
-    const ord = new Array(n);
-    for (let i = 0; i < n; i++) { const k = i * 3, dx = p[k] - cx, dy = p[k + 1] - cy, dz = p[k + 2] - cz; depth[i] = dx * dx + dy * dy + dz * dz; ord[i] = i; }
+    // (puffs the volume draws in full are left out: an invisible sprite still costs its whole quad in fill)
+    const ord = [];
+    for (let i = 0; i < n; i++) { if (this.vw[i] > 0.995) continue; const k = i * 3, dx = p[k] - cx, dy = p[k + 1] - cy, dz = p[k + 2] - cz; depth[i] = dx * dx + dy * dy + dz * dz; ord.push(i); }
     ord.sort((a, b) => depth[b] - depth[a]);
+    const nd = ord.length;
     const P = this.aPos.array, D = this.aData.array, Vv = this.aVar.array, L = this.aLit.array;
-    for (let s = 0; s < n; s++) {
+    for (let s = 0; s < nd; s++) {
       const i = ord[s], k = i * 3, j = i * 10, age = f[j];
       P[s * 3] = p[k] - origin.x; P[s * 3 + 1] = p[k + 1] - origin.y; P[s * 3 + 2] = p[k + 2] - origin.z;
       D[s * 4] = sz[i];
-      D[s * 4 + 1] = al[i];
+      D[s * 4 + 1] = al[i] * (1 - this.vw[i]);
       L[s * 3] = this.lit[i * 3]; L[s * 3 + 1] = this.lit[i * 3 + 1]; L[s * 3 + 2] = this.lit[i * 3 + 2];
       D[s * 4 + 2] = f[j + 4] * Math.exp(-age * (f[j + 8] > 0 ? 1.4 : 4));
       D[s * 4 + 3] = f[j + 5] * 6.2832 + age * f[j + 7];
       Vv[s] = Math.floor(f[j + 5] * 4) % 4 + 4 * this.soot[i] + 32 * (Math.floor(f[j + 5] * 256) % 64);
     }
-    this.geo.instanceCount = n;
-    for (const a of [this.aPos, this.aData, this.aVar, this.aLit]) { a.needsUpdate = true; a.clearUpdateRanges(); a.addUpdateRange(0, Math.max(1, n) * a.itemSize); }
+    this.geo.instanceCount = nd;
+    for (const a of [this.aPos, this.aData, this.aVar, this.aLit]) { a.needsUpdate = true; a.clearUpdateRanges(); a.addUpdateRange(0, Math.max(1, nd) * a.itemSize); }
     // ground plane in view space, for the soft fade where puffs meet it
     const u = this.mat.uniforms, vm = camera.matrixWorldInverse;
     const FL = this.flameLight;
