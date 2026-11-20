@@ -1,7 +1,7 @@
 // Entry point: one WebGL renderer shared by the title screen, the hangar and the flight view.
 import * as THREE from '../vendor/three.module.js';
 import { renderThumbnails } from './meshes.js';
-import { makeSkyPlanet, loadEarth, updateSky } from './planet.js';
+import { makeSkyPlanet, loadEarth, updateSky, skyLite } from './planet.js';
 import { Builder, worldKind } from './builder.js';
 import { sfx } from './audio.js';
 import { photoMode } from './photo.js';
@@ -33,7 +33,16 @@ await step('Drawing the parts', 0.3);
 let thumbs;
 try { thumbs = renderThumbnails(); } catch (err) { noWebGL(err); }
 // the GPU or its driver stopped the game (a crash or a reset): say so instead of freezing on a blank picture
-canvas.addEventListener('webglcontextlost', () => window.apogeeFail?.(`The graphics driver stopped the game (during: ${window.apogeeAt || 'loading'}).`, ' Reload the page. If it happens again, choose a lower quality in Graphics, and make sure the graphics driver is up to date.'));
+// The GPU or its driver stopped the game (a crash or a reset). The first time, switch to the light sky (much less
+// for the GPU and its shader compiler) and reload; if even that fails, say so, with what the GPU is, and what the
+// game was doing, instead of freezing on a blank picture.
+let gpu = '';   // what the GPU is (read now: a lost context cannot be asked)
+try { const g = renderer.getContext(), x = g.getExtension('WEBGL_debug_renderer_info'); gpu = x ? g.getParameter(x.UNMASKED_RENDERER_WEBGL) : g.getParameter(g.RENDERER); } catch { /* ignore */ }
+canvas.addEventListener('webglcontextlost', () => {
+  const at = window.apogeeAt || 'loading';
+  if (!skyLite) { try { localStorage.setItem('apogee.skyLite', '1'); localStorage.setItem('apogee.skyLiteWhy', `${at} · ${gpu}`); } catch { /* ignore */ } location.reload(); return; }
+  window.apogeeFail?.(`The graphics driver stopped the game (during: ${at}).`, ` Even the light graphics were too much for it. GPU: ${gpu || 'unknown'}. Make sure the graphics driver is up to date, and try another browser.`);
+});
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setClearColor(0x000000, 1);
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;

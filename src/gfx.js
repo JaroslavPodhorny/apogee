@@ -48,8 +48,12 @@ const ROWS = [
 ];
 let panel = null;
 function render() {
+  // the light sky (planet.js skyLite): set after the GPU stopped the full one
+  let lite = false, why = ''; try { lite = localStorage.getItem('apogee.skyLite') === '1'; why = (localStorage.getItem('apogee.skyLiteWhy') || '').replace(/[<>&"]/g, ''); } catch { /* ignore */ }
   panel.innerHTML = `<h2>Graphics</h2><div class="gl">${ROWS.map(([k, name, opts, tip]) => `<div class="gr"${tip ? ` title="${tip}"` : ''}><span>${name}</span><div class="seg">${opts.map(([v, l]) => `<button data-k="${k}" data-v='${JSON.stringify(v)}' class="${gfx[k] === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>`).join('')}</div>
+    ${lite ? `<div class="row"><small>Light sky: the graphics driver stopped the full one${why ? ` (${why})` : ''}</small><button id="gfx-full">Try full sky</button></div>` : ''}
     <div class="row"><small>${gfx.preset === 'custom' ? 'Custom settings' : 'Lower the quality if the frame rate is low'}</small><button class="solid" id="gfx-done">Done</button></div>`;
+  panel.querySelector('#gfx-full')?.addEventListener('click', () => { try { localStorage.removeItem('apogee.skyLite'); } catch { /* ignore */ } location.reload(); });
   for (const b of panel.querySelectorAll('.seg button')) b.onclick = () => { setGfx({ [b.dataset.k]: JSON.parse(b.dataset.v) }); render(); };
   panel.querySelector('#gfx-done').onclick = () => { panel.hidden = true; };
 }

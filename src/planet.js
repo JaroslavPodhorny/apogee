@@ -559,6 +559,7 @@ void main() {
     // --- mountains: bare rock on steep ground, alpine meadow above the tree line, snow above the snow line ---
     float rock = 0.0, snow = 0.0, alpine = 0.0;
     float sandK = arid * smoothstep(0.22, 0.38, lum0);            // sand sea: its steep faces are dunes, not rock
+#ifndef SKY_LITE
     if (ter && H > 0.0) {
       float lat = abs(nF.y);
       float snowLine = (5300.0 - 3700.0 * pow(lat, 1.5)) * uTA;
@@ -579,7 +580,9 @@ void main() {
       forest *= (1.0 - alpine) * (1.0 - rock);
       arid *= 1.0 - rock;
     }
+#endif
 
+#ifndef SKY_LITE   // (the light sky, after a GPU crash: satellite imagery only, no synthesized ground detail)
     // --- land: synthesized structure from 10 km down to a metre, each scale faded by pixel size ---
     float w10k = smoothstep(4000.0, 900.0, foot), w1k = smoothstep(600.0, 120.0, footA), w100 = smoothstep(40.0, 8.0, footA);
     float wPatch = smoothstep(1500.0, 300.0, foot);
@@ -1012,6 +1015,9 @@ void main() {
         river = clamp((0.0045 - rw) / fw + 0.5, 0.0, 1.0) * region * awaySite * landW * smoothstep(0.3, 0.1, length(rl.xy)) * smoothstep(0.06, 0.02, slope);
       }
     }
+#else
+    float tuft = 0.5, sand = 0.0, lakeK = 0.0, lakeDep = 0.0, poolK = 0.0, river = 0.0, inDep = 0.0;
+#endif
     if (lakeK > river) inDep = smoothstep(0.0, 4.0, lakeDep);
     river = max(max(river, poolK), lakeK);      // marsh pools, rivers and lakes: inland water
     water = max(water, river);
@@ -1060,6 +1066,7 @@ void main() {
     // goes into the roughness, which widens the sun's glitter path the way real distant water does.
     vec3 wn = vec3(0.0);
     float lost = 0.0;
+#ifndef SKY_LITE
     if (water > 0.01) {
       float wt = uTime;
       float swellK = 0.55 + 0.9 * fbm(nF * (uR / 25000.0) + 3.0, 2);      // wind varies over the sea: no uniform repeat
@@ -1082,6 +1089,7 @@ void main() {
         lost += (1.0 - vis) * amp * amp * 4.0;
       }
     }
+#endif
     vec3 snrm = normalize(nF + wn);
     float nl = max(dot(nrm, uSunF), 0.0);
     float occ = clamp(tOpen / 0.6, 0.45, 1.35);
@@ -1122,7 +1130,9 @@ void main() {
   // ---------- volumetric clouds near the layer (the flat shell below takes over farther out / higher up) ----------
   vec4 vc = vec4(0.0, 0.0, 0.0, 1.0);
   float tV = -1.0;
+#ifndef SKY_LITE
   if (uVolK > 0.0 && uEnv < 0.5) vc = marchClouds(d, dF, cF, b, tG, muV, tV);
+#endif
   bool hitV = tV > 0.0;
 
   // ---------- atmosphere along the view ray ----------
@@ -1171,7 +1181,11 @@ void main() {
     // near: the volume's shapes (the noise repeats every few tens of km, so far off the map's own clouds take over)
     float nearK = uNoiseOn > 0.5 ? 1.0 - smoothstep(uVolMax * 1.5, uVolMax * 3.5, tC) : 0.0;
     vec3 sv = vec3(0.0);
+#ifndef SKY_LITE
     if (nearK > 0.0) { sv = shellVol(dF * tC, cloudCov(cnF), tC * uPix); a = mix(a, sv.x, nearK); }
+#else
+    nearK = 0.0;
+#endif
     a *= smoothstep(0.0, 0.02, abs(dot(d, normalize(uCamPos + d * tC))));    // fade at grazing angles through the shell
     a *= mix(1.0, smoothstep(uVolMax * 0.7, uVolMax, tC), uVolK);              // the volume draws the near part
     if (a > 0.003) {
@@ -1225,10 +1239,15 @@ function skyUniforms(tex) {
 }
 
 // Full-screen sky/planet quad + a matching sphere used to render the environment map for reflections.
+// The light sky: the same atmosphere, clouds and satellite imagery, without the synthesized ground detail, the
+// sea's wave detail and the near cloud volumes. A much smaller program, used when a GPU (or its driver: Direct3D
+// on Windows) could not cope with the full one: after the GPU stopped the game once (main.js remembers it), or
+// on request with ?sky=lite in the address.
+export const skyLite = (() => { try { return /[?&]sky=lite\b/.test(location.search) || localStorage.getItem('apogee.skyLite') === '1'; } catch { return false; } })();
 export function makeSkyPlanet(tex) {
   const uniforms = skyUniforms(tex);
   const mat = new THREE.ShaderMaterial({
-    depthTest: false, depthWrite: false, uniforms,
+    depthTest: false, depthWrite: false, uniforms, defines: skyLite ? { SKY_LITE: 1 } : {},
     vertexShader: /* glsl */`uniform mat3 uCamRot; uniform float uTan, uAspect; varying vec3 vDir;
       void main(){ vDir = uCamRot * vec3(position.x*uTan*uAspect, position.y*uTan, -1.0); gl_Position = vec4(position.xy, 1.0, 1.0); }`,
     fragmentShader: SKY_FRAG,
@@ -1237,7 +1256,7 @@ export function makeSkyPlanet(tex) {
   mesh.frustumCulled = false; mesh.renderOrder = -1000;
   const envU = { ...uniforms, uEnv: { value: 1 }, uPix: { value: 0.02 }, uTerOn: { value: 0 }, uVolK: { value: 0 } };
   const envMat = new THREE.ShaderMaterial({
-    side: THREE.BackSide, depthWrite: false, uniforms: envU,
+    side: THREE.BackSide, depthWrite: false, uniforms: envU, defines: skyLite ? { SKY_LITE: 1 } : {},
     vertexShader: /* glsl */`varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
     fragmentShader: SKY_FRAG,
   });
