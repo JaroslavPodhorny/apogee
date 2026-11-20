@@ -2,19 +2,23 @@
 // Stored in localStorage (apogee.gfx); the flight view reads `gfx` every frame, so changes apply at once.
 const KEY = 'apogee.gfx';
 
-// res: share of the screen's pixels the 3D view renders at ('auto' adapts to the frame time).
-// sky: resolution of the sky / ground / cloud pass relative to the view (the frame's most expensive pixels).
+// res: share of the screen's pixels the 3D view renders at ('auto' adapts to the frame time, up to resMax device
+// pixels per screen point: a high-density screen at full density is four times the pixels, for the high end).
+// sky: detail level of the sky / ground / cloud pass, the frame's most expensive pixels (flight.js SKY_DENSITY turns
+// it into samples per screen point).
 // shadows: shadow map size (0 = none). msaa: samples on the HDR frame. fx: particle effects budget.
 export const PRESETS = {
-  low: { res: 'auto', sky: 0.45, shadows: 1024, clouds: false, bushes: false, bloom: true, msaa: 0, fx: 'low' },
-  medium: { res: 'auto', sky: 0.5, shadows: 2048, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
-  high: { res: 'auto', sky: 0.6, shadows: 2048, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
-  ultra: { res: 1, sky: 0.8, shadows: 4096, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
+  low: { res: 'auto', resMax: 1, sky: 0.45, shadows: 1024, clouds: false, bushes: false, bloom: true, msaa: 0, fx: 'low' },
+  medium: { res: 'auto', resMax: 1.25, sky: 0.5, shadows: 2048, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
+  high: { res: 'auto', resMax: 1.5, sky: 0.6, shadows: 2048, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
+  ultra: { res: 1, resMax: 2, sky: 0.8, shadows: 4096, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
 };
 const DEFAULT = { preset: 'high', ...PRESETS.high, fps: false };
 
 function load() {
   let s = null; try { s = JSON.parse(localStorage.getItem(KEY)); } catch { /* ignore */ }
+  // settings saved before a preset gained an option take that option from their preset
+  if (s && typeof s === 'object' && PRESETS[s.preset]) for (const k in PRESETS[s.preset]) if (!(k in s)) s[k] = PRESETS[s.preset][k];
   return { ...DEFAULT, ...(s && typeof s === 'object' ? s : {}) };
 }
 export const gfx = load();

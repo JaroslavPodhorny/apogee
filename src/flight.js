@@ -22,6 +22,8 @@ import { ascentGuide } from './guide.js';
 import { sfx } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
+// sky / ground pass density in samples per screen point, [high up, near the ground], for each 'Sky & ground' level
+const SKY_DENSITY = { 0.45: [0.65, 0.8], 0.5: [0.75, 1.0], 0.6: [0.9, 1.2], 0.8: [1.6, 2] };
 const WARPS = [1, 2, 4, 10, 50, 100, 1000, 10000];
 const SAS_MODES = [['hold', 'Hold'], ['prograde', 'Prograde'], ['retrograde', 'Retrograde'], ['radial', 'Radial out'], ['antiradial', 'Radial in'], ['normal', 'Normal'], ['antinormal', 'Anti-normal']];
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
@@ -59,10 +61,8 @@ export class Flight {
     this.bloom = new PhysicalBloomPass(0.045);
     this.composer.addPass(this.renderPass); this.composer.addPass(this.bloom); this.composer.addPass(outputPass());
     this.pmrem = new THREE.PMREMGenerator(renderer);
-    // The environment (sky light and reflections) is re-rendered from the sky shader every few seconds. three
-    // fixes its cube at 256² a face: the full sky shader over 400k pixels, a dropped frame each time. The sky is
-    // smooth light; 128² holds it as well at a quarter of the cost.
-    { const pm = this.pmrem, set = pm._setSize; if (set) pm._setSize = (n) => set.call(pm, Math.min(n, 128)); }
+    // the environment (sky light and reflections) is re-rendered from the sky shader every few seconds into a 128²
+    // cube (the sky is smooth light: 128² holds it as well as 256² at a quarter of the cost), see renderFlight
     this.sizeKey = '';
     this.renderer = renderer; this.cv = canvas; this.thumbs = thumbs; this.onExit = onExit; this.active = false;
     this.keys = new Set();
@@ -181,7 +181,7 @@ export class Flight {
     this.sunLight.castShadow = true; this.sunLight.shadow.mapSize.set(2048, 2048); this.applyShadows();
     this.sunLight.shadow.bias = -0.0004; this.sunLight.shadow.normalBias = 0.04;
     scene.add(this.sunLight, this.sunLight.target);
-    this.envT = 1e9; this.envRT = null; this.exposure = 1;
+    this.envT = 1e9; this.exposure = 1; this.warm = false;
     this.smoke = new Smoke(gfx.fx === 'low' ? 3500 : 9000); scene.add(this.smoke.mesh);   // room for the launch cloud and the trail together
     this.sparks = new Sparks(); scene.add(this.sparks.mesh);
     // the launch cloud as a real volume (graphics option); the sprites draw whatever lies outside it
@@ -291,6 +291,24 @@ export class Flight {
     if (!design) this.toast('info', `Flying ${world.active.name}`);
     this.updateHUD();
     return true;
+  }
+  // Draw what only shows up later (engine plumes, smoke, sparks, 3D bushes) once at the start of the flight,
+  // into a tiny target of the same format as the real frame, so their shaders are compiled and the GPU has built
+  // their pipelines before they are needed. (Metal builds a pipeline at its first real draw, not at link time:
+  // the first plume frame used to freeze the view for 0.2 s at ignition.) Run once the scene has its environment
+  // and fog, so the programs match the ones the frames will ask for.
+  prewarm() {
+    const r = this.renderer, shown = [], counts = [];
+    this.scene.traverse((o) => { const pm = o.userData.plume; if (pm) for (const q of [pm, ...(pm.userData.extra || [])]) if (!q.visible) { q.visible = true; shown.push(q); } });
+    const B = this.terrain?.bushes, geos = [this.smoke.geo, this.sparks.geo, ...(B ? [B.geo] : [])], bv = B?.group.visible;
+    if (B) B.group.visible = true;   // (3D bushes, too: their first draw came whenever the camera first got near some)
+    for (const g of geos) { counts.push(g.instanceCount); g.instanceCount = Math.max(1, g.instanceCount); }
+    const rt = (this.warmRT ||= new THREE.WebGLRenderTarget(8, 8, { type: THREE.HalfFloatType }));
+    if (rt.samples !== this.composer.renderTarget1.samples) { rt.samples = this.composer.renderTarget1.samples; rt.dispose(); }
+    const prev = r.getRenderTarget(); r.setRenderTarget(rt); r.render(this.scene, this.camera); r.setRenderTarget(prev);
+    for (const q of shown) q.visible = false;
+    geos.forEach((g, i) => { g.instanceCount = counts[i]; });
+    if (B) B.group.visible = bv;
   }
   restart() {
     if (this.design) this.start(this.design, this.kind, { state: this.preLaunch });
@@ -1096,14 +1114,17 @@ export class Flight {
     const view = a && this.views.get(a), S = vAlt - this.alt0 < 600 ? Math.max(110, (view?.ext || 10) * 1.6) : Math.max(25, (view?.ext || 10) * 1.6);
     const sc = this.sunLight.shadow.camera;
     if (Math.abs(sc.right - S) > 0.5) { sc.left = -S; sc.right = S; sc.top = S; sc.bottom = -S; sc.near = 1; sc.far = 1400; sc.updateProjectionMatrix(); }
-    // reflections and ambient light come from the sky itself, re-rendered twice a second
+    // reflections and ambient light come from the sky itself, re-rendered every few seconds (often just after the
+    // start, while the view settles). Nothing is allocated or freed here: the sky goes into one cube target and is
+    // filtered into two environment targets used in turn. (Freeing the texture the frames in flight are still
+    // reading made the driver wait for the GPU: a 130 ms freeze every refresh.)
     this.envT += dt;
     if (this.envT > (this.time < 3 ? 0.4 : 3)) {
       this.envT = 0;
-      const rt = this.pmrem.fromScene(this.sky.userData.envScene, 0, 0.1, 10);
-      this.scene.environment = rt.texture;
-      if (this.envRT) this.envRT.dispose();
-      this.envRT = rt;
+      const E = (this.envCube ||= (() => { const rt = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType }); return { rt, cam: new THREE.CubeCamera(0.1, 10, rt), out: [null, null], k: 0 }; })());
+      E.cam.update(this.renderer, this.sky.userData.envScene);
+      E.k ^= 1; E.out[E.k] = this.pmrem.fromCubemap(E.rt.texture, E.out[E.k]);
+      this.scene.environment = E.out[E.k].texture;
     }
     // eye adaptation: open up at night, close down in sunlight
     // aerial perspective for meshes (the range, buildings, smoke): the same haze the sky shader puts on the ground
@@ -1173,6 +1194,7 @@ export class Flight {
       const r = this.renderer; r.setRenderTarget(this.skyRT); r.render(this.skyScene, cam); r.setRenderTarget(null);
       this.scene.background = this.resolveSky(cam, sw, sh, this.pw, this.ph);
     }
+    if (!this.warm && this.scene.environment && this.scene.fog) { this.warm = true; this.prewarm(); }
     this.renderPass.scene = this.scene; this.renderPass.camera = cam;
     applyTone(this.renderer, this.exposure * (photo?.gain ?? 1));
     this.bloom.enabled = gfx.bloom;
@@ -1238,13 +1260,22 @@ export class Flight {
       // a hidden tab gets no frames worth measuring: do not let its stalls drag the resolution down
       if (document.hidden) { this.ftAcc = 0; this.ftN = 0; }
       if (this.ftN >= 45 || (this.ftN >= 4 && this.ftAcc > 1)) {
-        const avg = this.ftAcc / this.ftN; this.ftAcc = 0; this.ftN = 0;
-        if (avg > 1 / 45 && this.resScale > 0.6) this.resScale = Math.max(0.6, this.resScale - 0.1);
-        else if (avg < 1 / 58 && this.resScale < 1) this.resScale = Math.min(1, this.resScale + 0.05);
+        const avg = this.ftAcc / this.ftN, now = this.time; this.ftAcc = 0; this.ftN = 0;
+        // With vsync a frame takes 16.7 or 33 ms, nothing between: a frame that needs 20 ms runs at 30 fps, drops a
+        // step, then fits in 16.7 ms and would climb straight back, the view pumping sharp and soft every second.
+        // So it climbs only after a few calm windows in a row, and a step up that had to be taken back soon after
+        // is not tried again for half a minute.
+        if (avg > 1 / 45 && this.resScale > 0.6) {
+          if (now - (this.resUpT ?? -1e9) < 4) this.resHold = now + 30;
+          this.resScale = Math.max(0.6, this.resScale - 0.1); this.resCalm = 0;
+        } else if (avg < 1 / 58 && this.resScale < 1) {
+          if (++this.resCalm >= 3 && now > (this.resHold ?? 0)) { this.resScale = Math.min(1, this.resScale + 0.05); this.resCalm = 0; this.resUpT = now; }
+        } else this.resCalm = 0;
       }
-      pr = Math.min(dpr, 1.5) * this.resScale;
+      // the preset sets how far auto may go on a high-density screen (Low 1×, Medium 1.25×, High 1.5×)
+      pr = Math.min(dpr, gfx.resMax ?? 1.5) * this.resScale;
     } else { this.resScale = 1; pr = Math.min(dpr, 2) * gfx.res; }
-    pr = Math.max(0.5, pr);
+    pr = Math.max(0.5, pr); this.pr = pr;
     const key = `${w}x${h}@${pr.toFixed(2)}/${gfx.msaa}`;
     this.pw = Math.round(w * pr); this.ph = Math.round(h * pr);
     if (key === this.sizeKey) return;
@@ -1252,12 +1283,15 @@ export class Flight {
     for (const rt of [this.composer.renderTarget1, this.composer.renderTarget2]) if (rt.samples !== gfx.msaa) { rt.samples = gfx.msaa; rt.dispose(); }
     this.composer.setPixelRatio(pr); this.composer.setSize(w, h);
   }
-  // Resolution of the sky / ground pass relative to the view. Near the ground the planet fills the view and its
-  // fine detail needs (nearly) full resolution: a reduced buffer turns forest texture into staircases. Higher up,
-  // sky and limb are soft and a reduced buffer is fine. Drops a step when the frame rate forces the view down.
+  // Resolution of the sky / ground pass relative to the view. Its density is set in screen points (CSS pixels),
+  // not device pixels: on a 2× display a fraction of the view would be four times the samples of a 1× one, for
+  // detail the eye cannot resolve after the bicubic upscale (and the ground's fine detail is filtered by its pixel
+  // footprint anyway). Near the ground the planet fills the view and its texture needs about one sample per point
+  // (fewer turns forest into staircases); higher up, sky and limb are soft. Ultra keeps full device resolution.
+  // The adaptive resolution scales it with the view.
   skyRes(lowCam) {
-    const base = gfx.sky * (this.resScale < 0.8 ? 0.85 : 1);
-    return lowCam ? Math.min(1, base + (this.resScale >= 0.9 ? 0.4 : 0.3)) : base;
+    const d = SKY_DENSITY[gfx.sky] || [gfx.sky * 1.4, 1];
+    return Math.min(1, (lowCam ? d[1] : d[0]) * (this.resScale ?? 1) / (this.pr || 1));
   }
   applyShadows() {
     const L = this.sunLight; if (!L) return;

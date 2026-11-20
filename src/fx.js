@@ -164,7 +164,7 @@ export class Smoke {
     this.n = 0;
     this.p = new Float64Array(MAX * 3); this.v = new Float64Array(MAX * 3); this.e = new Float64Array(MAX * 3);
     this.f = new Float32Array(MAX * 10); // age, life, size0, size1, heat0, seed, opacity, turn rate, hit the ground, carried by the jet
-    this.depth = new Float32Array(MAX); this.soot = new Uint8Array(MAX);
+    this.soot = new Uint8Array(MAX);
     // launch-cloud puffs (pad()): how hard the air brakes them (1/s) and how strongly they rise (m/s²); 0 = other smoke
     this.q = new Float32Array(MAX * 2);
     this.th = 0; this.tt = 0;   // the planet's turn and the clock, for the turbulence that lives in the pad's air
@@ -287,13 +287,15 @@ export class Smoke {
       const x = p[i * 3], y = p[i * 3 + 1], z = p[i * 3 + 2], r0 = 0.34 * sz[i] * 0.6;
       const rl = Math.sqrt(x * x + y * y + z * z), ux = x / rl, uy = y / rl, uz = z / rl;
       let tau = 0, prev = 0;
-      for (const d0 of SUN_STEPS) { const d = d0 * scale, t = r0 + d; tau += ext(x + sx * t, y + sy * t, z + sz2 * t) * (d - prev); prev = d; }
+      for (let q = 0; q < SUN_STEPS.length; q++) { const d = SUN_STEPS[q] * scale, t = r0 + d; tau += ext(x + sx * t, y + sy * t, z + sz2 * t) * (d - prev); prev = d; }
       let tauU = 0; prev = 0;
-      for (const d0 of SKY_STEPS) { const d = d0 * scale, t = r0 + d; tauU += ext(x + ux * t, y + uy * t, z + uz * t) * (d - prev); prev = d; }
+      for (let q = 0; q < SKY_STEPS.length; q++) { const d = SKY_STEPS[q] * scale, t = r0 + d; tauU += ext(x + ux * t, y + uy * t, z + uz * t) * (d - prev); prev = d; }
       // toward the flame: the glow lights the smoke it can reach, not the far side of the cloud
       let tauF = 0;
-      if (fon) {
-        const dx = Fx - x, dy = Fy - y, dz = Fz - z, D = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1, span = Math.max(0, D - r0 - 4);
+      // (past ~400 m the flame's glow has died away in the steam, see the sprite shader: no need to march to it)
+      const dFx = Fx - x, dFy = Fy - y, dFz = Fz - z, dF2 = dFx * dFx + dFy * dFy + dFz * dFz;
+      if (fon && dF2 < 160000) {
+        const dx = dFx, dy = dFy, dz = dFz, D = Math.sqrt(dF2) || 1, span = Math.max(0, D - r0 - 4);
         for (let k = 0; k < 5; k++) { const t = r0 + span * (k + 0.5) / 5; tauF += ext(x + dx / D * t, y + dy / D * t, z + dz / D * t) * span / 5; }
       }
       // light scattered forward keeps going: the effective extinction for light is well below the visible one
@@ -354,7 +356,7 @@ export class Smoke {
         // steam only creeps up. The lift builds as the jet stalls and dies away as the steam cools
         let hot = 0.3;
         const T = this.towers, Ux = ct * ux - st * uz, Uz = st * ux + ct * uz;
-        for (let c = 0; c < T.length; c += 5) {
+        for (let c = 0; tt < 60 && c < T.length; c += 5) {   // (after a minute the lift has died away anyway)
           let dx = X - T[c], dy = y - T[c + 1], dz = Z - T[c + 2];
           const dh = dx * Ux + dy * uy + dz * Uz;   // across the ground only
           dx -= Ux * dh; dy -= uy * dh; dz -= Uz * dh;
@@ -407,16 +409,19 @@ export class Smoke {
       sz[i] = this.sizeOf(i, age);
       al[i] = fi * fi * (3 - 2 * fi) * fo * fo * 0.7 * f[j + 6];
     }
-    this.light(n, this.p, sz, al, this.lit);
+    // light changes slowly and each puff eases toward its new value: a big cloud re-lights a smaller share a frame
+    this.light(n, this.p, sz, al, this.lit, 1, n > 6000 ? 6 : n > 3000 ? 4 : 3);
     // draw back to front so overlapping puffs never swap
-    const cx = camera.position.x + origin.x, cy = camera.position.y + origin.y, cz = camera.position.z + origin.z, depth = this.depth;
-    const ord = [];
-    for (let i = 0; i < n; i++) { const k = i * 3, dx = p[k] - cx, dy = p[k + 1] - cy, dz = p[k + 2] - cz; depth[i] = dx * dx + dy * dy + dz * dz; ord.push(i); }
-    ord.sort((a, b) => depth[b] - depth[a]);
-    const nd = ord.length;
+    const cx = camera.position.x + origin.x, cy = camera.position.y + origin.y, cz = camera.position.z + origin.z;
+    // (sorted as packed numbers, distance in centimetres above the index, by the native numeric sort: no
+    // comparator calls and nothing allocated, where an array of indices made ~200 KB of garbage a frame)
+    const keys = (this.sortKeys ||= new Float64Array(this.max)).subarray(0, n);
+    for (let i = 0; i < n; i++) { const k = i * 3, dx = p[k] - cx, dy = p[k + 1] - cy, dz = p[k + 2] - cz; keys[i] = Math.floor(Math.sqrt(dx * dx + dy * dy + dz * dz) * 100) * 16384 + i; }
+    keys.sort();
+    const nd = n;
     const P = this.aPos.array, D = this.aData.array, Vv = this.aVar.array, L = this.aLit.array, Ve = this.aVel.array;
     for (let s = 0; s < nd; s++) {
-      const i = ord[s], k = i * 3, j = i * 10, age = f[j];
+      const i = keys[nd - 1 - s] % 16384, k = i * 3, j = i * 10, age = f[j];
       P[s * 3] = p[k] - origin.x; P[s * 3 + 1] = p[k + 1] - origin.y; P[s * 3 + 2] = p[k + 2] - origin.z;
       D[s * 4] = sz[i];
       D[s * 4 + 1] = al[i];

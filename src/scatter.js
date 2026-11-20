@@ -45,7 +45,7 @@ export class Scatter {
   constructor(renderer, terrain) {
     this.renderer = renderer; this.terrain = terrain;
     this.rt = new THREE.WebGLRenderTarget(G, G, { type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false, generateMipmaps: false });
-    this.key = '';
+    this.centre = null;
     const site = terrain.site.clone().normalize();
     this.sE = new THREE.Vector3(0, 1, 0).cross(site).normalize(); this.sN = new THREE.Vector3().crossVectors(site, this.sE); this.site = site;
     // --- placement pass ---
@@ -142,14 +142,17 @@ export class Scatter {
     const R = this.terrain.R, site = this.site;
     const off = camF.clone().addScaledVector(site, -R);
     const x = off.dot(this.sE), y = off.dot(this.sN);
-    const show = agl < 400 && Math.hypot(x, y) < 85000;
+    // (every bush is gone by FAR from the camera, height included: above that there is nothing left to draw)
+    const show = agl < FAR && Math.hypot(x, y) < 85000;
     this.group.visible = show;
     if (!show) return false;
     const ic = Math.floor(x / BUSH_CELL), jc = Math.floor(y / BUSH_CELL);
     const xc = (ic + 0.5) * BUSH_CELL, yc = (jc + 0.5) * BUSH_CELL;
-    const key = `${ic}/${jc}`;
-    if (key !== this.key && !this.pending) {
-      this.key = key;
+    // the window reaches 40 m past the farthest bush: re-centre it only once the camera has moved a few cells
+    // (each re-centre is a pass and a read-back that waits for the GPU; every cell made the climb stutter)
+    const c = this.centre;
+    if ((!c || Math.abs(ic - c[0]) > 2 || Math.abs(jc - c[1]) > 2) && !this.pending) {
+      this.centre = [ic, jc];
       this.pU.uCell.value.set(ic, jc); this.pU.uXc.value.set(xc, yc);
       const r = this.renderer, prev = r.getRenderTarget();
       r.setRenderTarget(this.rt); r.render(this.passScene, this.passCam); r.setRenderTarget(prev);
