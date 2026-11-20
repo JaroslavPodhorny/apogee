@@ -132,12 +132,6 @@ export class Flight {
     this.rcsBtn = mk('RCS', 'Small steering thrusters (R)', () => this.toggleRCS());
     this.tgtBtn = mk('Target', 'Point at the target', () => this.setSasMode('totarget'));
     this.killBtn = mk('Match', 'Point against your motion relative to the target: burn to match its speed', () => this.setSasMode('relretro'));
-    // compile the effect shaders in the background now, so the first re-entry or explosion does not stall a frame
-    if (renderer.compileAsync) {
-      const warm = new THREE.Scene(), pm = plasmaMaterials(), u = { value: new THREE.Vector3() };
-      for (const [g, m] of [[fireballGeo, fireballMaterial()], [plasmaGeo, pm.sheath], [plasmaCapGeo, pm.cap], [vaporGeo, vaporMaterial(u.value, u.value)], [new THREE.PlaneGeometry(), new Sparks(1).mat]]) warm.add(new THREE.Mesh(g, m));
-      renderer.compileAsync(warm, new THREE.PerspectiveCamera()).catch(() => {});
-    }
     this.nav = $('navball').getContext('2d');
     this.navImg = this.nav.createImageData($('navball').width, $('navball').height);
   }
@@ -300,6 +294,10 @@ export class Flight {
   prewarm() {
     const r = this.renderer, shown = [], counts = [];
     this.scene.traverse((o) => { const pm = o.userData.plume; if (pm) for (const q of [pm, ...(pm.userData.extra || [])]) if (!q.visible) { q.visible = true; shown.push(q); } });
+    // (and the re-entry glow and the vapour cone, hidden on every craft until needed, and an explosion's fireball:
+    // their first appearance, going transonic or the first blast, otherwise stalled a frame)
+    for (const view of this.views.values()) for (const q of [view.glow, view.cap, view.vapor]) if (q && !q.visible) { q.visible = true; shown.push(q); }
+    const fb = (this.warmFb ||= new THREE.Mesh(fireballGeo, fireballMaterial())); fb.frustumCulled = false; this.scene.add(fb);
     const B = this.terrain?.bushes, geos = [this.smoke.geo, this.sparks.geo, ...(B ? [B.geo] : [])], bv = B?.group.visible;
     if (B) B.group.visible = true;   // (3D bushes, too: their first draw came whenever the camera first got near some)
     for (const g of geos) { counts.push(g.instanceCount); g.instanceCount = Math.max(1, g.instanceCount); }
@@ -307,6 +305,7 @@ export class Flight {
     if (rt.samples !== this.composer.renderTarget1.samples) { rt.samples = this.composer.renderTarget1.samples; rt.dispose(); }
     const prev = r.getRenderTarget(); r.setRenderTarget(rt); r.render(this.scene, this.camera); r.setRenderTarget(prev);
     for (const q of shown) q.visible = false;
+    this.scene.remove(fb);
     geos.forEach((g, i) => { g.instanceCount = counts[i]; });
     if (B) B.group.visible = bv;
   }
@@ -1221,7 +1220,8 @@ export class Flight {
     ter.update(camF, rel, fade, sunF);
     const agl = camAlt - ter.groundAt(cp, theta);
     if (ter.bushes && !gfx.bushes) ter.bushes.group.visible = false;
-    su.uBush3D.value = ter.bushes && gfx.bushes && ter.bushes.update(camF, agl) ? 1 : 0;
+    const tgtF = new THREE.Vector3(c * this.origin.x - s * this.origin.z, this.origin.y, s * this.origin.x + c * this.origin.z);   // the rocket the camera orbits
+    su.uBush3D.value = ter.bushes && gfx.bushes && ter.bushes.update(camF, agl, tgtF) ? 1 : 0;
     ter.gMat.uniforms.uRelToClip.value.copy(rel); ter.gMat.uniforms.uFC.value = 2 / Math.log2(1e9 + 1);
     ter.sceneU.uCamScene.value.copy(cam.position); ter.sceneU.uRotS.value.setFromMatrix4(rotY);
     if (!this.gRT) this.gRT = new THREE.WebGLRenderTarget(sw, sh, { type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: true });

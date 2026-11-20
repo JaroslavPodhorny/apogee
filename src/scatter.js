@@ -14,7 +14,7 @@ import { mergeGeometries, mergeVertices } from '../vendor/jsm/utils/BufferGeomet
 import { TERRAIN_GLSL, terrainUniforms } from './terrain.js';
 import { BUSH_GLSL, BUSH_HASH, BUSH_CELL } from './bushes.js';
 
-const G = 80;                 // cells across the window (80 × 7 m ≈ 560 m)
+const G = 128;                // cells across the window (128 × 7 m ≈ 900 m)
 const FAR = 240;              // the 3D bushes are gone by here; the ground's painted ones are in
 
 function bushGeometry() {
@@ -44,7 +44,10 @@ function bushGeometry() {
 export class Scatter {
   constructor(renderer, terrain) {
     this.renderer = renderer; this.terrain = terrain;
-    this.rt = new THREE.WebGLRenderTarget(G, G, { type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false, generateMipmaps: false });
+    // The placement is read back to the CPU. In 8-bit pixels (each cell four of them, one 32-bit number in each): a
+    // float target's read-back blocked the main thread 40-90 ms every time (on WebGL over Metal), and the camera
+    // orbiting the rocket re-centres the window several times a second (the stutter when dragging the view).
+    this.rt = new THREE.WebGLRenderTarget(G * 4, G, { type: THREE.UnsignedByteType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false, generateMipmaps: false });
     this.centre = null;
     const site = terrain.site.clone().normalize();
     this.sE = new THREE.Vector3(0, 1, 0).cross(site).normalize(); this.sN = new THREE.Vector3().crossVectors(site, this.sE); this.site = site;
@@ -59,7 +62,8 @@ export class Scatter {
         ${BUSH_GLSL}
         uniform vec2 uCell, uXc; uniform vec3 uSE, uSN;
         void main() {
-          ivec2 c = ivec2(uCell) + ivec2(gl_FragCoord.xy) - ${G / 2};
+          int comp = int(gl_FragCoord.x) % 4;   // which of the cell's four numbers this pixel holds
+          ivec2 c = ivec2(uCell) + ivec2(int(gl_FragCoord.x) / 4, int(gl_FragCoord.y)) - ${G / 2};
           float dens = bushDensity((vec2(c) + 0.5) * ${BUSH_CELL.toFixed(1)});
           vec2 bp; float id;
           float r = dens > 0.0 ? bushAt(c, dens, bp, id) : 0.0;
@@ -71,7 +75,11 @@ export class Scatter {
           if (H < -0.25) { gl_FragColor = vec4(0.0); return; }     // sea (the flattened launch area is exactly 0: land)
           float dz = -(q - qc) / (zs + zc);                       // sphere drop, without cancellation
           vec3 rel = uSE * (x - uXc.x) + uSN * (y - uXc.y) + uTSite * dz + dir * H;
-          gl_FragColor = vec4(rel, floor(r * 100.0) + id * 0.99);
+          vec4 o = vec4(rel, floor(r * 100.0) + id * 0.99);
+          // packed as 32-bit fixed point over four bytes: position ±512 m to 1/65536 m, size and id to 1/16384
+          float v = comp == 0 ? o.x : comp == 1 ? o.y : comp == 2 ? o.z : o.w;
+          uint u = comp < 3 ? uint((v + 512.0) * 65536.0) : uint(v * 16384.0);
+          gl_FragColor = vec4(float(u >> 24u), float((u >> 16u) & 255u), float((u >> 8u) & 255u), float(u & 255u)) / 255.0;
         }`,
     }));
     pass.frustumCulled = false;
@@ -84,7 +92,7 @@ export class Scatter {
     this.aCell = new THREE.InstancedBufferAttribute(new Float32Array(G * G * 2), 2).setUsage(THREE.DynamicDrawUsage);
     geo.setAttribute('aBush', this.aBush); geo.setAttribute('aCell', this.aCell);
     geo.instanceCount = 0; geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
-    this.geo = geo; this.buf = new Float32Array(G * G * 4); this.pending = false;
+    this.geo = geo; this.buf = new Uint8Array(G * G * 16); this.pending = false;
     this.U = {
       uRelW: { value: new THREE.Vector3() }, uFrame: { value: new THREE.Matrix3() },
       uCamScene: terrain.sceneU.uCamScene, uRotS: terrain.sceneU.uRotS,
@@ -138,20 +146,26 @@ export class Scatter {
   }
 
   // camF: camera in the planet-fixed frame; agl: camera height above the ground. Returns whether it is shown.
-  update(camF, agl) {
+  // tgtF: what the camera looks at and orbits (the rocket), planet-fixed frame
+  update(camF, agl, tgtF = camF) {
     const R = this.terrain.R, site = this.site;
-    const off = camF.clone().addScaledVector(site, -R);
-    const x = off.dot(this.sE), y = off.dot(this.sN);
+    const off = camF.clone().addScaledVector(site, -R), toff = tgtF.clone().addScaledVector(site, -R);
+    const x = off.dot(this.sE), y = off.dot(this.sN), tx = toff.dot(this.sE), ty = toff.dot(this.sN);
     // (every bush is gone by FAR from the camera, height included: above that there is nothing left to draw)
     const show = agl < FAR && Math.hypot(x, y) < 85000;
     this.group.visible = show;
     if (!show) return false;
-    const ic = Math.floor(x / BUSH_CELL), jc = Math.floor(y / BUSH_CELL);
+    // Each re-centre is a pass and a read-back, and on some GPUs (WebGL over Metal) a read-back holds up the frame
+    // ~0.1 s whatever the format. So the window is centred on the rocket, not the camera: orbiting the view round it
+    // (dragging) then moves nothing. It holds the camera's whole reach round the rocket plus the bushes' range out
+    // to ~190 m away; farther out it follows the camera as before. Re-centred once the rocket or the camera has
+    // moved a few cells (or the camera is zoomed out past what the last window held)
+    const H = G / 2 * BUSH_CELL, onT = Math.hypot(x - tx, y - ty) < H - FAR - 3 * BUSH_CELL;
+    const mx = onT ? tx : x, my = onT ? ty : y;
+    const ic = Math.floor(mx / BUSH_CELL), jc = Math.floor(my / BUSH_CELL);
     const xc = (ic + 0.5) * BUSH_CELL, yc = (jc + 0.5) * BUSH_CELL;
-    // the window reaches 40 m past the farthest bush: re-centre it only once the camera has moved a few cells
-    // (each re-centre is a pass and a read-back that waits for the GPU; every cell made the climb stutter)
-    const c = this.centre;
-    if ((!c || Math.abs(ic - c[0]) > 2 || Math.abs(jc - c[1]) > 2) && !this.pending) {
+    const c = this.centre, reach = this.snap ? Math.hypot(x - this.snap.xc, y - this.snap.yc) : 0;
+    if ((!c || Math.abs(ic - c[0]) > 2 || Math.abs(jc - c[1]) > 2 || (this.snap && reach > this.snap.reach)) && !this.pending) {
       this.centre = [ic, jc];
       this.pU.uCell.value.set(ic, jc); this.pU.uXc.value.set(xc, yc);
       const r = this.renderer, prev = r.getRenderTarget();
@@ -159,8 +173,8 @@ export class Scatter {
       // read the window back without stalling; until it arrives the previous set stays, placed exactly
       // (each set keeps the centre it was computed about)
       this.pending = true;
-      const snap = { ic, jc, xc, yc, x, y };
-      r.readRenderTargetPixelsAsync(this.rt, 0, 0, G, G, this.buf).then(() => this.compact(snap)).catch(() => {}).finally(() => { this.pending = false; });
+      const snap = { ic, jc, xc, yc, reach: Math.min(H - FAR - 3 * BUSH_CELL, Math.hypot(x - xc, y - yc) + 30) };   // (how far the camera may stray from the centre)
+      r.readRenderTargetPixelsAsync(this.rt, 0, 0, G * 4, G, this.buf).then(() => this.compact(snap)).catch(() => {}).finally(() => { this.pending = false; });
     }
     if (!this.snap) return true;
     const { xc: sx, yc: sy } = this.snap;
@@ -172,17 +186,18 @@ export class Scatter {
     return true;
   }
 
-  // keep only the cells that hold a bush the camera can get near before the next read-back
+  // keep only the cells that hold a bush the camera can get near before the next read-back: within its reach of
+  // the centre plus the bushes' range
   compact(snap) {
-    const b = this.buf, A = this.aBush.array, C = this.aCell.array, lim = (FAR + 3 * BUSH_CELL) ** 2;
-    const ox = snap.x - snap.xc, oy = snap.y - snap.yc;   // camera, relative to the window centre (tangent plane)
+    const b = this.buf, A = this.aBush.array, C = this.aCell.array, lim = (snap.reach + FAR + 3 * BUSH_CELL) ** 2;
     let n = 0;
+    const u32 = (o) => b[o] * 16777216 + b[o + 1] * 65536 + b[o + 2] * 256 + b[o + 3];   // the pass's packed numbers
     for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) {
-      const k = (j * G + i) * 4;
-      if (!(b[k + 3] > 0)) continue;
-      const dx = (i - G / 2 + 0.5) * BUSH_CELL - ox, dy = (j - G / 2 + 0.5) * BUSH_CELL - oy;
+      const k = (j * G + i) * 16, w = u32(k + 12) / 16384;
+      if (!(w > 0)) continue;
+      const dx = (i - G / 2 + 0.5) * BUSH_CELL, dy = (j - G / 2 + 0.5) * BUSH_CELL;   // from the window centre
       if (dx * dx + dy * dy > lim) continue;
-      A[n * 4] = b[k]; A[n * 4 + 1] = b[k + 1]; A[n * 4 + 2] = b[k + 2]; A[n * 4 + 3] = b[k + 3];
+      A[n * 4] = u32(k) / 65536 - 512; A[n * 4 + 1] = u32(k + 4) / 65536 - 512; A[n * 4 + 2] = u32(k + 8) / 65536 - 512; A[n * 4 + 3] = w;
       C[n * 2] = snap.ic + i - G / 2; C[n * 2 + 1] = snap.jc + j - G / 2;
       n++;
     }
