@@ -646,34 +646,36 @@ export class Builder {
     }
   }
 
-  render(w, h) {
-    const c = this.cam, held = this.held;
+  render(w, h, photo = null) {
+    const camera = photo?.camera || this.camera;
+    const c = photo?.orbit || this.cam, held = this.held;
     // carrying a part to the top or bottom edge scrolls the view
-    if (held && held.drag && held.moved && !this.overShelf && this.py != null) {
+    if (!photo && held && held.drag && held.moved && !this.overShelf && this.py != null) {
       const edge = 54, sp = c.dist * 0.012;
       if (this.py < edge) { c.target.y += sp * (1 - this.py / edge); this.needPlace = true; }
       else if (this.py > h - edge) { c.target.y -= sp * (1 - (h - this.py) / edge); this.needPlace = true; }
     }
-    this.camera.aspect = w / h;
-    const shift = w > 860 ? 120 : 90; this.camera.setViewOffset(w + shift * 2, h, 0, 0, w, h);
-    this.camera.updateProjectionMatrix();
+    camera.aspect = w / h;
+    if (photo) camera.clearViewOffset();
+    else { const shift = w > 860 ? 120 : 90; camera.setViewOffset(w + shift * 2, h, 0, 0, w, h); }
+    camera.updateProjectionMatrix();
     const ce = Math.cos(c.el);
-    this.camera.position.set(c.target.x + c.dist * ce * Math.sin(c.az), c.target.y + c.dist * Math.sin(c.el), c.target.z + c.dist * ce * Math.cos(c.az));
-    this.camera.lookAt(c.target);
-    this.camera.updateMatrixWorld();
-    if (this.needPlace) { this.needPlace = false; if (held) this.updatePlacement(); }
+    camera.position.set(c.target.x + c.dist * ce * Math.sin(c.az), c.target.y + c.dist * Math.sin(c.el), c.target.z + c.dist * ce * Math.cos(c.az));
+    camera.lookAt(c.target);
+    photo?.aim(camera); camera.updateMatrixWorld();
+    if (!photo && this.needPlace) { this.needPlace = false; if (held) this.updatePlacement(); }
     if (this.sun.castShadow !== gfx.shadows > 0) this.fitShadow();
-    applyTone(this.renderer, 1.1);
-    this.renderReflection(w, h);
-    this.renderer.render(this.scene, this.camera);
+    applyTone(this.renderer, 1.1 * (photo?.gain ?? 1));
+    this.renderReflection(w, h, camera);
+    this.renderer.render(this.scene, camera);
   }
   // the rocket mirrored in the floor: render it from a camera reflected below the floor plane, clipped to what is
   // above the floor, into a half-size target the floor shader samples projectively
-  renderReflection(w, h) {
+  renderReflection(w, h, cam) {
     const on = gfx.preset !== 'low';
     this.reflU.uOn.value = on ? 1 : 0;
     if (!on) return;
-    const r = this.renderer, y0 = this.floor.position.y, cam = this.camera, rc = this.reflCam;
+    const r = this.renderer, y0 = this.floor.position.y, rc = this.reflCam;
     const pr = r.getPixelRatio(), rw = Math.max(64, Math.round(w * pr * 0.5)), rh = Math.max(64, Math.round(h * pr * 0.5));
     if (this.reflRT.width !== rw || this.reflRT.height !== rh) this.reflRT.setSize(rw, rh);
     this.reflU.uTexel.value.set(1 / rw, 1 / rh);

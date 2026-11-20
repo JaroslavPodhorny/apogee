@@ -48,6 +48,7 @@
       <button id="btn-new" class="link" title="Start from nothing">New</button>
       <button id="btn-save" class="link" title="Save in this browser">Save</button>
       <button id="btn-load" class="link" title="Open a saved or example rocket">Load</button>
+      <button class="link photo-open" title="Photo mode (F8)">Photo</button>
       <button class="link gfx-btn" title="Graphics settings">Graphics</button>
       <span class="rule-v"></span>
       <label class="world"><select id="planet" title="Which world to launch from">
@@ -103,6 +104,7 @@
       <button id="f-data-btn" class="link" title="Full telemetry (I)">Data</button>
       <button id="f-vessels-btn" class="link" title="Every craft in this universe (V)">Craft</button>
       <button id="f-help-btn" class="link" title="Controls (H)">Help</button>
+      <button class="link photo-open" title="Photo mode (F8)">Photo</button>
       <button class="link gfx-btn" title="Graphics settings">Graphics</button>
       <button class="link snd"></button>
     </div>
@@ -150,6 +152,27 @@
   <div id="f-end" class="card" hidden></div>
 </div>
 
+<dialog id="photo" aria-labelledby="photo-title">
+  <header><h1 id="photo-title">Photo mode</h1><button id="photo-close">Back to game <kbd>Esc</kbd></button></header>
+  <div id="photo-workspace">
+    <div id="photo-frame" tabindex="0" aria-label="Viewfinder. Arrow keys orbit, Shift and arrow keys reframe.">
+      <canvas id="photo-image"></canvas><div id="photo-grid" hidden></div>
+    </div>
+  </div>
+  <footer>
+    <div class="photo-settings">
+      <label>Frame<select id="photo-ratio"><option value="1.7777777778">Landscape · 16:9</option><option value="1">Square · 1:1</option><option value="0.8">Portrait · 4:5</option><option value="0.5625">Story · 9:16</option></select></label>
+      <label>Lens <output id="lens-value"></output><input id="photo-lens" type="range" min="18" max="85" step="1"></label>
+      <label>Exposure <output id="ev-value"></output><input id="photo-ev" type="range" min="-2" max="2" step="0.1" value="0"></label>
+      <label class="photo-check"><input id="photo-thirds" type="checkbox"> Grid</label>
+      <label class="photo-check"><input id="photo-sign" type="checkbox"> Apogee signature</label>
+      <button id="photo-reset" class="link">Reset view</button>
+      <button id="photo-share" class="link" hidden>Share last PNG</button>
+      <button id="photo-save" class="solid">Save PNG</button>
+    </div>
+    <div class="photo-notes"><span class="photo-mouse-hint">Drag to orbit · Shift-drag to reframe · Scroll to move closer</span><span class="photo-touch-hint">Drag to orbit · Use two fingers to reframe and zoom</span><span id="photo-status" role="status"></span></div>
+  </footer>
+</dialog>
 <div id="boot"><span>Apogee</span></div>
 <script type="module" src="src/main.js"></script>
 </body>

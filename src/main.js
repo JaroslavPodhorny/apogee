@@ -4,6 +4,7 @@ import { renderThumbnails } from './meshes.js';
 import { makeSkyPlanet, loadEarth, updateSky } from './planet.js';
 import { Builder, worldKind } from './builder.js';
 import { sfx } from './audio.js';
+import { photoMode } from './photo.js';
 import { Flight } from './flight.js';
 import { stockRockets } from './stock.js';
 import { cloneDesign } from './rocket.js';
@@ -27,6 +28,8 @@ const tex = await loadEarth(renderer);
 let mode = 'title';
 const flight = new Flight(renderer, canvas, thumbs, tex, () => setMode('build'));
 const builder = new Builder(renderer, canvas, thumbs, (design, kind) => { flight.start(design, kind); setMode('flight'); }, () => setMode('title'));
+
+const photo = photoMode(renderer, builder, flight, () => mode, () => sfx.quiet());
 
 // ---------- title screen: the planet drifting by from low orbit ----------
 const WORLDS = { compact: 'Planet: small, best to start', real: 'Planet: real-size Earth, hard' };
@@ -92,6 +95,7 @@ for (const b of document.querySelectorAll('.gfx-btn')) b.onclick = () => toggleG
 for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, () => sfx.init(), true);
 
 function setMode(m) {
+  photo.close();
   mode = m;
   $('title-ui').hidden = m !== 'title';
   if (m !== 'build') builder.deactivate();
@@ -105,14 +109,14 @@ setMode('title');
 $('boot').remove();
 window.apogee = { builder, flight, setMode, menuSky, tex, get mode() { return mode; }, autopilot: (warp) => (window.apogee.ap = startAutopilot(flight, warp)) };
 
-document.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('button, .item'); if (b) { if (b.blur) b.blur(); if (b.id !== 'f-stage-btn') sfx.play('click'); } });
+document.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('button, .item'); if (b) { if (b.blur && !b.closest('dialog')) b.blur(); if (b.id !== 'f-stage-btn') sfx.play('click'); } });
 let last = performance.now(), clock = 0;
 function loop(now) {
   const dt = Math.min(0.25, (now - last) / 1000); last = now; clock += dt;
   const w = window.innerWidth, h = window.innerHeight;
   tickFps(dt);
   try {
-    if (mode === 'build') builder.render(w, h); else if (mode === 'flight') flight.frame(dt, w, h); else renderTitle(clock, w, h);
+    if (photo.active) photo.render(); else if (mode === 'build') builder.render(w, h); else if (mode === 'flight') flight.frame(dt, w, h); else renderTitle(clock, w, h);
   } catch (err) { console.error(err); }
   requestAnimationFrame(loop);
 }

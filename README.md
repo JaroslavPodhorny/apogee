@@ -31,6 +31,12 @@ Then open http://localhost:5173.
 - With RCS on (R): I / K, J / L and H / N move the craft forward / back, left / right, up / down.
 - The line at the top is the current goal with a hint for what to do next.
 
+## Photo mode
+
+Choose **Photo** in the hangar or in flight, or press **F8**. Flight freezes while the viewfinder is open. Drag to orbit, scroll to move closer, or hold Shift and drag to place the rocket off-centre. On touchscreens, use two fingers to reframe and pinch to zoom. With the viewfinder focused, arrow keys orbit, Shift + arrows reframe, and Enter saves a photo.
+
+Choose a frame, adjust the lens and exposure, and select **Save PNG**. Photos have a 2560-pixel long edge. The thirds grid is a composition aid and the optional Apogee signature appears in the finished image. Supported browsers also offer **Share last PNG**. Press **Esc** to return to your original camera.
+
 ## Fairings and interstages
 
 - A stack decoupler with an engine standing on it grows an interstage shell round that engine; it drops away with the spent stage.

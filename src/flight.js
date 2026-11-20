@@ -105,6 +105,7 @@ export class Flight {
       <tr><td><kbd>T</kbd></td><td>Hold attitude on / off</td></tr>
       <tr><td><kbd>G</kbd></td><td>Auto-steer to orbit on / off</td></tr>
       <tr><td><kbd>.</kbd> <kbd>,</kbd></td><td>Speed time up / slow it down</td></tr>
+      <tr><td><kbd>F8</kbd></td><td>Photo mode</td></tr>
       <tr><td><kbd>M</kbd></td><td>Orbit map</td></tr>
       <tr><td><kbd>L</kbd></td><td>Lights on / off</td></tr>
       <tr><td><kbd>O</kbd></td><td>Unfold / fold solar arrays and radiators</td></tr>
@@ -439,6 +440,13 @@ export class Flight {
     for (const [id, m] of this.partMeshes) if (!alive.has(id)) { m.parent?.remove(m); this.partMeshes.delete(id); }
   }
 
+  positionView(v, view) {
+    view.group.position.copy(v.r).sub(this.origin);
+    view.group.quaternion.copy(v.q);
+    view.body.position.copy(v.com).negate();
+    view.group.updateMatrixWorld(true);
+  }
+
   updateViews() {
     const world = this.world, pl = world.planet;
     const qi = new THREE.Quaternion(), va = new THREE.Vector3();
@@ -446,11 +454,8 @@ export class Flight {
     const gv = new THREE.Vector3(), gn = new THREE.Vector3(), gq2 = new THREE.Quaternion();
     let thrustSum = 0; const litPos = new THREE.Vector3(), litDown = new THREE.Vector3(), litCol = new THREE.Color(0, 0, 0);
     for (const [v, view] of this.views) {
-      view.group.position.copy(v.r).sub(this.origin);
-      view.group.quaternion.copy(v.q);
-      view.body.position.copy(v.com).negate();
-      view.group.updateMatrixWorld(true);
-            const pr = pl.pressure(v.alt), vf = 1 - Math.min(1, pr);
+      this.positionView(v, view);
+      const pr = pl.pressure(v.alt), vf = 1 - Math.min(1, pr);
       va.copy(v.v); va.x -= pl.omega * v.r.z; va.z += pl.omega * v.r.x;
       const sAir = va.length();
       const vb = va.applyQuaternion(qi.copy(v.q).invert()).normalize();
@@ -988,138 +993,8 @@ export class Flight {
     if (world.vessels.includes(a)) this.origin.copy(a.r);
     else if (this.spectate) this.origin.copy(this.spectate.fixed).applyAxisAngle(Y_AXIS, world.theta());
     this.resizePipeline(w, h);
-    const theta = world.theta();
-
-    if (this.map) this.renderMap(w, h, theta);
-    else {
-      const up = this.origin.clone().normalize();
-      let east = new THREE.Vector3().crossVectors(Y_AXIS, up);
-      if (east.lengthSq() < 1e-8) east.set(1, 0, 0); east.normalize();
-      const north = new THREE.Vector3().crossVectors(up, east);
-      const c = this.cam, ce = Math.cos(c.el);
-      const off = north.multiplyScalar(Math.cos(c.az) * ce * c.dist).addScaledVector(east, Math.sin(c.az) * ce * c.dist).addScaledVector(up, Math.sin(c.el) * c.dist);
-      const cp = this.origin.clone().add(off);
-      let camAlt = cp.length() - pl.R;
-      const camG = this.terrain ? this.terrain.groundAt(cp, theta) : 0;      // keep the camera above hills too
-      if (camAlt - camG < 1.5) { off.addScaledVector(up, 1.5 + camG - camAlt); cp.copy(this.origin).add(off); camAlt = cp.length() - pl.R; }
-      const cam = this.camera;
-      cam.aspect = w / h; cam.near = Math.max(0.5, c.dist * 0.025); cam.far = Math.max(25000, c.dist * 60, this.booms.list.length ? Math.min(400000, this.booms.reach() * 3 + this.blastDist()) : 0); cam.updateProjectionMatrix();
-      cam.position.copy(off);
-      if (this.shake > 0.001) { const k = this.shake * c.dist * 0.02, t = this.time; cam.position.x += Math.sin(t * 43.1) * k; cam.position.y += Math.sin(t * 37.7 + 1) * k; cam.position.z += Math.sin(t * 29.3 + 2) * k * 0.6; this.shake *= Math.exp(-dt * 2.2); }
-      // engine rumble: a smooth, low vibration felt near the pad (strongest as it lifts off, gone once it is well
-      // clear of the ground), moving the camera and its aim together like a camera on a tripod nearby, so the
-      // whole view trembles a little instead of the ground twitching round a rocket pinned to the screen
-      if (a && a.thrust > 0 && !this.paused) {
-        const hag = Math.max(0, a.alt - this.alt0);
-        const near = Math.exp(-hag / 120) * (0.35 + 0.65 * Math.min(1, pl.pressure(a.alt)));
-        const k = Math.min(1, a.thrust / (a.mass * 15)) * near * Math.min(c.dist, 300) * 0.0011;
-        if (k > 1e-4) {
-          const t = this.time, nz = (f, p) => Math.sin(t * f + p) * 0.6 + Math.sin(t * f * 1.73 + p * 2.1) * 0.4;
-          this.rumble = (this.rumble || new THREE.Vector3()).set(nz(9.1, 0.3), nz(7.7, 1.9), nz(8.3, 4.1)).multiplyScalar(k);
-          cam.position.add(this.rumble);
-        } else this.rumble = null;
-      } else this.rumble = null;
-      cam.up.copy(up); cam.lookAt(this.rumble ? this.rumble.clone().multiplyScalar(0.85) : new THREE.Vector3(0, 0, 0)); cam.updateMatrixWorld();
-      // the ground and sky are drawn from where the camera really is, shake included: otherwise the rumble moves
-      // the rocket and the pad but not the ground under them, and the ground seems to slide about
-      cp.copy(this.origin).add(cam.position); camAlt = cp.length() - pl.R;
-      const ss = this.skyRes(cp.length() - pl.R < 15000 / Math.sqrt(pl.atmK));
-      this.sky.userData.viewH = Math.max(16, Math.round((this.ph || h) * ss));
-      updateSky(this.sky, { camera: cam, camPos: cp, theta, planet: pl, sunDir: this.sunDir, siteFixed: world.siteFixed, time: world.t, volumetric: gfx.clouds });
-      // site
-      const sUp = world.siteDir();
-      const sPos = sUp.clone().multiplyScalar(pl.R).sub(this.origin);
-      this.site.visible = sPos.length() < 60000;
-      if (this.site.visible) {
-        const sE = new THREE.Vector3().crossVectors(Y_AXIS, sUp).normalize(), sS = new THREE.Vector3().crossVectors(sE, sUp);
-        this.site.position.copy(sPos); this.site.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(sE, sUp, sS));
-      }
-      this.site.userData.update(this.paused ? 0 : dt, { launched: !a || a.launched, night: 1 - THREE.MathUtils.smoothstep(sUp.dot(this.sunDir), -0.04, 0.1), time: this.time });
-      // sunlight reddened by the air it passes through (and cut off by the planet)
-      const vAlt = this.origin.length() - pl.R;
-      const T = sunTransmittance(pl, vAlt, up.dot(this.sunDir), this.sunLight.color);
-      this.sunLight.intensity = SUN_E;
-      this.sunLight.position.copy(this.sunDir).multiplyScalar(600); this.sunLight.target.position.set(0, 0, 0);
-      const view = a && this.views.get(a), S = vAlt - this.alt0 < 600 ? Math.max(110, (view?.ext || 10) * 1.6) : Math.max(25, (view?.ext || 10) * 1.6);
-      const sc = this.sunLight.shadow.camera;
-      if (Math.abs(sc.right - S) > 0.5) { sc.left = -S; sc.right = S; sc.top = S; sc.bottom = -S; sc.near = 1; sc.far = 1400; sc.updateProjectionMatrix(); }
-      // reflections and ambient light come from the sky itself, re-rendered twice a second
-      this.envT += dt;
-      if (this.envT > (this.time < 3 ? 0.4 : 3)) {
-        this.envT = 0;
-        const rt = this.pmrem.fromScene(this.sky.userData.envScene, 0, 0.1, 10);
-        this.scene.environment = rt.texture;
-        if (this.envRT) this.envRT.dispose();
-        this.envRT = rt;
-      }
-      // eye adaptation: open up at night, close down in sunlight
-      // aerial perspective for meshes (the range, buildings, smoke): the same haze the sky shader puts on the ground
-      {
-        const k = pl.atmK, camAlt = cp.length() - pl.R, dens = (k > 1 ? 1 / 6000 : 1 / 18000) * Math.exp(-Math.max(0, camAlt) / (8000 / k));
-        if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(0xffffff, dens);
-        const day = THREE.MathUtils.smoothstep(up.dot(this.sunDir), -0.12, 0.25);
-        this.scene.fog.density = dens;
-        this.scene.fog.color.setRGB(0.05 + 0.6 * T.r, 0.08 + 0.75 * T.g, 0.14 + 0.9 * T.b).multiplyScalar(SUN_E * 0.16 * day + 0.002);
-      }
-      const lum = 0.2126 * T.r + 0.7152 * T.g + 0.0722 * T.b;
-      let target = THREE.MathUtils.lerp(3.2, 1.0, THREE.MathUtils.smoothstep(lum, 0.0, 0.35));
-      // a camera filming a launch at night stops down for the flame, so its colours do not burn out to white
-      const flameK = this.engineLight && this.engineLight.intensity > 0 ? THREE.MathUtils.clamp(1 - this.cam.dist / 500, 0, 1) : 0;
-      target = THREE.MathUtils.lerp(target, Math.min(target, 1.35), flameK);
-      // and for the glow of re-entry: the plasma is the brightest thing in the night sky
-      const plasmaK = a && !a.landed ? THREE.MathUtils.clamp((a.heatFlux - 7e4) / 4e5, 0, 1) : 0;
-      target = THREE.MathUtils.lerp(target, Math.min(target, 1.1), Math.min(1, plasmaK * 3));
-      this.exposure += (target - this.exposure) * (1 - Math.exp(-dt * 2.5));
-      // stars: exposed for a sunlit rocket only the brightest show; with the eye opened up at night, all of them
-      this.sky.material.uniforms.uStarK.value = THREE.MathUtils.lerp(0.3, 1.6, THREE.MathUtils.smoothstep(this.exposure, 1.1, 2.8));
-      const sm = this.smoke.mat.uniforms;
-      sm.uSunCol.value.set(T.r, T.g, T.b).multiplyScalar(SUN_E);
-      const day = THREE.MathUtils.smoothstep(up.dot(this.sunDir), -0.15, 0.3) * Math.max(0.05, 1 - vAlt / pl.atmTop);
-      sm.uAmb.value.set(0.06, 0.09, 0.14).multiplyScalar(SUN_E * day + 0.01);
-      sm.uSunV.value.copy(this.sunDir).transformDirection(cam.matrixWorldInverse);
-      this.smoke.sunW.copy(this.sunDir);
-      { const L = this.engineLight; this.smoke.flameOn = !!L && L.intensity > 0; if (this.smoke.flameOn) this.smoke.flameW.copy(L.position).add(this.origin); }
-      // light bounced up off the ground under the cloud: sunlit grass and sand, warm and dim
-      { const k = Math.max(0, up.dot(this.sunDir)) * SUN_E * 0.9 / Math.PI; sm.uGndCol.value.set(0.17 * T.r, 0.15 * T.g, 0.1 * T.b).multiplyScalar(k).addScaledVector(sm.uAmb.value, 0.15); }
-      {
-        const camAlt = cp.length() - pl.R;
-        sunTransmittance(pl, camAlt, cp.clone().normalize().dot(this.sunDir), this.sunCol);
-        const occ = [this.site.children[1]]; for (const vw of this.views.values()) occ.push(vw.body);
-        this.sun.update(cam, cp, this.sunDir, pl.R, this.sunCol, occ, THREE.MathUtils.clamp(1 - camAlt / pl.atmTop, 0, 1), this.terVis ?? 1);
-      }
-      this.smoke.update(this.paused ? 0 : this.simDt, pl, this.origin, cam, up, sPos.dot(up));
-      this.sparks.viewH = this.ph; this.sparks.budget = gfx.fx === 'low' ? 0.4 : 1; this.smoke.setLite(gfx.fx === 'low');
-      this.sparks.update(this.paused ? 0 : this.simDt, pl, this.origin, cam, a ? a.v : new THREE.Vector3(), 1 / 50);
-      {
-        const tr = this.terrain, th2 = theta;
-        const sc = new THREE.Vector3(this.sunCol.r, this.sunCol.g, this.sunCol.b).multiplyScalar(SUN_E), am = sm.uAmb.value.clone();
-        this.booms.update(this.simDt, world, this.origin, cam, this.sunDir, sc, am, tr ? (x) => tr.groundAt(x, th2) : null);
-        this.updateBlastMarks(theta);
-        // shock arriving at the camera: a jolt, and the flash in the eye
-        for (const b of this.booms.list) {
-          if (b.shook || b.vacuum) continue;
-          const d = cp.distanceTo(b.fixed.clone().applyAxisAngle(Y_AXIS, theta));
-          const E = Math.max(b.kt, 1e-6) * 4.184e12, Rs = Math.max(1.03 * Math.pow((E * b.age * b.age) / Math.max(b.rho, 1e-6), 0.2), 340 * b.age);
-          if (Rs >= d) { b.shook = true; this.shake = Math.min(1.5, this.shake + Math.min(1.2, 40 * Math.pow(b.Rfb / d, 1.2))); }
-        }
-        const fl = $('f-flash'); const f = this.booms.flash; fl.style.opacity = f > 0.004 ? Math.min(1, f).toFixed(3) : '0';
-      }
-      this.updateViews();
-      this.updatePartLights();
-      {
-        const sw = Math.max(16, Math.round(this.pw * ss)), sh = Math.max(16, Math.round(this.ph * ss));
-        this.renderTerrain(cam, cp, theta, sw, sh);
-        if (!this.skyRT) this.skyRT = new THREE.WebGLRenderTarget(sw, sh, { type: THREE.HalfFloatType, depthBuffer: false });
-        else if (this.skyRT.width !== sw || this.skyRT.height !== sh) this.skyRT.setSize(sw, sh);
-        this.frameN = ((this.frameN || 0) + 1) % 64; this.sky.material.uniforms.uFrame.value = this.frameN;
-        const r = this.renderer; r.setRenderTarget(this.skyRT); r.render(this.skyScene, cam); r.setRenderTarget(null);
-        this.scene.background = this.resolveSky(cam, sw, sh, this.pw, this.ph);
-      }
-      this.renderPass.scene = this.scene; this.renderPass.camera = cam;
-      applyTone(this.renderer, this.exposure);
-      this.bloom.enabled = gfx.bloom;
-      this.composer.render(dt);
-    }
+    if (this.map) this.renderMap(w, h, world.theta());
+    else this.renderFlight(dt, w, h);
     if (a && !this.paused && world.warp <= 4 && world.vessels.includes(a)) {
       const maxT = a.parts.reduce((s, p) => s + (p.def.engine && p.ignited && !p.flameout ? p.def.engine.thrust : 0), 0);
       sfx.flight(maxT > 0 ? Math.min(1, a.thrust / maxT) : 0, Math.min(1, pl.pressure(a.alt)), a.landed ? 0 : Math.min(1, a.dynP / 30000), THREE.MathUtils.clamp((a.heatFlux - 7e4) / 4e5, 0, 1));
@@ -1127,6 +1002,143 @@ export class Flight {
     this.hudT -= dt; this.navT -= dt;
     if (this.hudT <= 0) { this.hudT = 0.1; this.updateHUD(); this.vesT = (this.vesT || 0) + 1; if (this.vesT % 5 === 0) this.renderVessels(); }
     if (this.navT <= 0) { this.navT = 0.033; this.drawNavball(); }
+  }
+
+  // Photo renders reuse the flight pipeline without stepping the world or emitting new effects.
+  renderFlight(dt, w, h, photo = null) {
+    const world = this.world, pl = world.planet, a = world.active, theta = world.theta();
+    const up = this.origin.clone().normalize();
+    let east = new THREE.Vector3().crossVectors(Y_AXIS, up);
+    if (east.lengthSq() < 1e-8) east.set(1, 0, 0); east.normalize();
+    const north = new THREE.Vector3().crossVectors(up, east);
+    const c = photo?.orbit || this.cam, ce = Math.cos(c.el);
+    const off = north.multiplyScalar(Math.cos(c.az) * ce * c.dist).addScaledVector(east, Math.sin(c.az) * ce * c.dist).addScaledVector(up, Math.sin(c.el) * c.dist);
+    const cp = this.origin.clone().add(off);
+    let camAlt = cp.length() - pl.R;
+    const camG = this.terrain ? this.terrain.groundAt(cp, theta) : 0;      // keep the camera above hills too
+    if (camAlt - camG < 1.5) { off.addScaledVector(up, 1.5 + camG - camAlt); cp.copy(this.origin).add(off); camAlt = cp.length() - pl.R; }
+    const cam = photo?.camera || this.camera;
+    cam.aspect = w / h; cam.near = Math.max(0.5, c.dist * 0.025); cam.far = Math.max(25000, c.dist * 60, this.booms.list.length ? Math.min(400000, this.booms.reach() * 3 + this.blastDist()) : 0); cam.updateProjectionMatrix();
+    cam.position.copy(off);
+    if (!photo && this.shake > 0.001) { const k = this.shake * c.dist * 0.02, t = this.time; cam.position.x += Math.sin(t * 43.1) * k; cam.position.y += Math.sin(t * 37.7 + 1) * k; cam.position.z += Math.sin(t * 29.3 + 2) * k * 0.6; this.shake *= Math.exp(-dt * 2.2); }
+    // engine rumble: a smooth, low vibration felt near the pad (strongest as it lifts off, gone once it is well
+    // clear of the ground), moving the camera and its aim together like a camera on a tripod nearby, so the
+    // whole view trembles a little instead of the ground twitching round a rocket pinned to the screen
+    if (a && a.thrust > 0 && !this.paused && !photo) {
+      const hag = Math.max(0, a.alt - this.alt0);
+      const near = Math.exp(-hag / 120) * (0.35 + 0.65 * Math.min(1, pl.pressure(a.alt)));
+      const k = Math.min(1, a.thrust / (a.mass * 15)) * near * Math.min(c.dist, 300) * 0.0011;
+      if (k > 1e-4) {
+        const t = this.time, nz = (f, p) => Math.sin(t * f + p) * 0.6 + Math.sin(t * f * 1.73 + p * 2.1) * 0.4;
+        this.rumble = (this.rumble || new THREE.Vector3()).set(nz(9.1, 0.3), nz(7.7, 1.9), nz(8.3, 4.1)).multiplyScalar(k);
+        cam.position.add(this.rumble);
+      } else this.rumble = null;
+    } else this.rumble = null;
+    cam.up.copy(up); cam.lookAt(this.rumble ? this.rumble.clone().multiplyScalar(0.85) : new THREE.Vector3(0, 0, 0)); photo?.aim(cam); cam.updateMatrixWorld();
+    // the ground and sky are drawn from where the camera really is, shake included: otherwise the rumble moves
+    // the rocket and the pad but not the ground under them, and the ground seems to slide about
+    cp.copy(this.origin).add(cam.position); camAlt = cp.length() - pl.R;
+    const ss = photo ? 1 : this.skyRes(cp.length() - pl.R < 15000 / Math.sqrt(pl.atmK));
+    this.sky.userData.viewH = Math.max(16, Math.round((this.ph || h) * ss));
+    updateSky(this.sky, { camera: cam, camPos: cp, theta, planet: pl, sunDir: this.sunDir, siteFixed: world.siteFixed, time: world.t, volumetric: gfx.clouds });
+    // site
+    const sUp = world.siteDir();
+    const sPos = sUp.clone().multiplyScalar(pl.R).sub(this.origin);
+    this.site.visible = sPos.length() < 60000;
+    if (this.site.visible) {
+      const sE = new THREE.Vector3().crossVectors(Y_AXIS, sUp).normalize(), sS = new THREE.Vector3().crossVectors(sE, sUp);
+      this.site.position.copy(sPos); this.site.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(sE, sUp, sS));
+    }
+    this.site.userData.update(this.paused ? 0 : dt, { launched: !a || a.launched, night: 1 - THREE.MathUtils.smoothstep(sUp.dot(this.sunDir), -0.04, 0.1), time: this.time });
+    // sunlight reddened by the air it passes through (and cut off by the planet)
+    const vAlt = this.origin.length() - pl.R;
+    const T = sunTransmittance(pl, vAlt, up.dot(this.sunDir), this.sunLight.color);
+    this.sunLight.intensity = SUN_E;
+    this.sunLight.position.copy(this.sunDir).multiplyScalar(600); this.sunLight.target.position.set(0, 0, 0);
+    const view = a && this.views.get(a), S = vAlt - this.alt0 < 600 ? Math.max(110, (view?.ext || 10) * 1.6) : Math.max(25, (view?.ext || 10) * 1.6);
+    const sc = this.sunLight.shadow.camera;
+    if (Math.abs(sc.right - S) > 0.5) { sc.left = -S; sc.right = S; sc.top = S; sc.bottom = -S; sc.near = 1; sc.far = 1400; sc.updateProjectionMatrix(); }
+    // reflections and ambient light come from the sky itself, re-rendered twice a second
+    this.envT += dt;
+    if (this.envT > (this.time < 3 ? 0.4 : 3)) {
+      this.envT = 0;
+      const rt = this.pmrem.fromScene(this.sky.userData.envScene, 0, 0.1, 10);
+      this.scene.environment = rt.texture;
+      if (this.envRT) this.envRT.dispose();
+      this.envRT = rt;
+    }
+    // eye adaptation: open up at night, close down in sunlight
+    // aerial perspective for meshes (the range, buildings, smoke): the same haze the sky shader puts on the ground
+    {
+      const k = pl.atmK, camAlt = cp.length() - pl.R, dens = (k > 1 ? 1 / 6000 : 1 / 18000) * Math.exp(-Math.max(0, camAlt) / (8000 / k));
+      if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(0xffffff, dens);
+      const day = THREE.MathUtils.smoothstep(up.dot(this.sunDir), -0.12, 0.25);
+      this.scene.fog.density = dens;
+      this.scene.fog.color.setRGB(0.05 + 0.6 * T.r, 0.08 + 0.75 * T.g, 0.14 + 0.9 * T.b).multiplyScalar(SUN_E * 0.16 * day + 0.002);
+    }
+    const lum = 0.2126 * T.r + 0.7152 * T.g + 0.0722 * T.b;
+    let target = THREE.MathUtils.lerp(3.2, 1.0, THREE.MathUtils.smoothstep(lum, 0.0, 0.35));
+    // a camera filming a launch at night stops down for the flame, so its colours do not burn out to white
+    const flameK = this.engineLight && this.engineLight.intensity > 0 ? THREE.MathUtils.clamp(1 - this.cam.dist / 500, 0, 1) : 0;
+    target = THREE.MathUtils.lerp(target, Math.min(target, 1.35), flameK);
+    // and for the glow of re-entry: the plasma is the brightest thing in the night sky
+    const plasmaK = a && !a.landed ? THREE.MathUtils.clamp((a.heatFlux - 7e4) / 4e5, 0, 1) : 0;
+    target = THREE.MathUtils.lerp(target, Math.min(target, 1.1), Math.min(1, plasmaK * 3));
+    this.exposure += (target - this.exposure) * (1 - Math.exp(-dt * 2.5));
+    // stars: exposed for a sunlit rocket only the brightest show; with the eye opened up at night, all of them
+    this.sky.material.uniforms.uStarK.value = THREE.MathUtils.lerp(0.3, 1.6, THREE.MathUtils.smoothstep(this.exposure, 1.1, 2.8));
+    const sm = this.smoke.mat.uniforms;
+    sm.uSunCol.value.set(T.r, T.g, T.b).multiplyScalar(SUN_E);
+    const day = THREE.MathUtils.smoothstep(up.dot(this.sunDir), -0.15, 0.3) * Math.max(0.05, 1 - vAlt / pl.atmTop);
+    sm.uAmb.value.set(0.06, 0.09, 0.14).multiplyScalar(SUN_E * day + 0.01);
+    sm.uSunV.value.copy(this.sunDir).transformDirection(cam.matrixWorldInverse);
+    this.smoke.sunW.copy(this.sunDir);
+    { const L = this.engineLight; this.smoke.flameOn = !!L && L.intensity > 0; if (this.smoke.flameOn) this.smoke.flameW.copy(L.position).add(this.origin); }
+    // light bounced up off the ground under the cloud: sunlit grass and sand, warm and dim
+    { const k = Math.max(0, up.dot(this.sunDir)) * SUN_E * 0.9 / Math.PI; sm.uGndCol.value.set(0.17 * T.r, 0.15 * T.g, 0.1 * T.b).multiplyScalar(k).addScaledVector(sm.uAmb.value, 0.15); }
+    {
+      const camAlt = cp.length() - pl.R;
+      sunTransmittance(pl, camAlt, cp.clone().normalize().dot(this.sunDir), this.sunCol);
+      const occ = [this.site.children[1]]; for (const vw of this.views.values()) occ.push(vw.body);
+      this.sun.update(cam, cp, this.sunDir, pl.R, this.sunCol, occ, THREE.MathUtils.clamp(1 - camAlt / pl.atmTop, 0, 1), this.terVis ?? 1);
+    }
+    this.smoke.update(photo || this.paused ? 0 : this.simDt, pl, this.origin, cam, up, sPos.dot(up));
+    this.sparks.viewH = this.ph; this.sparks.budget = gfx.fx === 'low' ? 0.4 : 1; this.smoke.setLite(gfx.fx === 'low');
+    this.sparks.update(photo || this.paused ? 0 : this.simDt, pl, this.origin, cam, a ? a.v : new THREE.Vector3(), 1 / 50);
+    {
+      const tr = this.terrain, th2 = theta;
+      const sc = new THREE.Vector3(this.sunCol.r, this.sunCol.g, this.sunCol.b).multiplyScalar(SUN_E), am = sm.uAmb.value.clone();
+      this.booms.update(photo ? 0 : this.simDt, world, this.origin, cam, this.sunDir, sc, am, tr ? (x) => tr.groundAt(x, th2) : null);
+      this.updateBlastMarks(theta);
+      // shock arriving at the camera: a jolt, and the flash in the eye
+      for (const b of this.booms.list) {
+        if (photo || b.shook || b.vacuum) continue;
+        const d = cp.distanceTo(b.fixed.clone().applyAxisAngle(Y_AXIS, theta));
+        const E = Math.max(b.kt, 1e-6) * 4.184e12, Rs = Math.max(1.03 * Math.pow((E * b.age * b.age) / Math.max(b.rho, 1e-6), 0.2), 340 * b.age);
+        if (Rs >= d) { b.shook = true; this.shake = Math.min(1.5, this.shake + Math.min(1.2, 40 * Math.pow(b.Rfb / d, 1.2))); }
+      }
+      const fl = $('f-flash'); const f = this.booms.flash; fl.style.opacity = f > 0.004 ? Math.min(1, f).toFixed(3) : '0';
+    }
+    if (!photo) this.updateViews();
+    else if (this.map) {
+      // The map renders separate markers. Bring the photographed craft to their current poses.
+      for (const [v, view] of this.views) this.positionView(v, view);
+    }
+    this.updatePartLights();
+    {
+      const sw = Math.max(16, Math.round(this.pw * ss)), sh = Math.max(16, Math.round(this.ph * ss));
+      this.renderTerrain(cam, cp, theta, sw, sh);
+      if (!this.skyRT) this.skyRT = new THREE.WebGLRenderTarget(sw, sh, { type: THREE.HalfFloatType, depthBuffer: false });
+      else if (this.skyRT.width !== sw || this.skyRT.height !== sh) this.skyRT.setSize(sw, sh);
+      if (!photo) this.frameN = ((this.frameN || 0) + 1) % 64;
+      this.sky.material.uniforms.uFrame.value = this.frameN || 0;
+      const r = this.renderer; r.setRenderTarget(this.skyRT); r.render(this.skyScene, cam); r.setRenderTarget(null);
+      this.scene.background = this.resolveSky(cam, sw, sh, this.pw, this.ph);
+    }
+    this.renderPass.scene = this.scene; this.renderPass.camera = cam;
+    applyTone(this.renderer, this.exposure * (photo?.gain ?? 1));
+    this.bloom.enabled = gfx.bloom;
+    this.composer.render(dt);
   }
 
   // Terrain: choose patches around the camera and draw their distance, height and normal into a small
@@ -1177,11 +1189,12 @@ export class Flight {
 
   // Keep the frame rate up on smaller GPUs: scale the render resolution with the measured frame time.
   // (The resolution and quality options come from the graphics settings, gfx.js.)
-  resizePipeline(w, h) {
+  resizePipeline(w, h, pixelRatio) {
     if (this.resScale == null) { this.resScale = 1; this.ftAcc = 0; this.ftN = 0; }
     const dpr = window.devicePixelRatio || 1;
     let pr;
-    if (gfx.res === 'auto') {
+    if (pixelRatio !== undefined) pr = pixelRatio;
+    else if (gfx.res === 'auto') {
       const dt = this.lastDt || 0.016;
       this.ftAcc += Math.min(dt, 0.25); this.ftN++;
       // a hidden tab gets no frames worth measuring: do not let its stalls drag the resolution down

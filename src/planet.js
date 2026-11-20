@@ -143,7 +143,10 @@ vec3 stars(vec3 d) {
 
 // ---------- volumetric clouds: a real layer of cumulus near the camera ----------
 uniform highp sampler3D tNoise;
-uniform vec3 uCloudRel;          // camera position in the fixed frame (plus wind drift), wrapped to 36 km
+// cloud noise is sampled at positions relative to the camera; uCO[i] is where the camera (plus the wind's drift) falls
+// in each noise layer's own tile, worked out in doubles on the CPU and wrapped by that layer's exact period. (Wrapping
+// one shared position instead made the layers that do not tile with it jump whenever the camera crossed a seam.)
+uniform vec3 uCO[6];
 uniform float uVolK, uVolMax, uCB, uCT, uRb, uRt, uFrame, uNoiseOn;
 // over the launch site the weather is always fair: scattered cumulus, never overcast, never empty
 float siteCov(float cov, vec3 nF) {
@@ -164,17 +167,17 @@ float nLod(float scale) { return max(0.0, log2(gFoot * 64.0 / scale)); }
 const mat3 CR1 = mat3(0.80, 0.36, -0.48, -0.60, 0.48, -0.64, 0.0, 0.80, 0.60);
 const mat3 CR2 = mat3(0.36, -0.48, 0.80, 0.48, -0.64, -0.60, 0.80, 0.60, 0.0);
 float cloudShape(vec3 loc) {
-  float a = textureLod(tNoise, loc * (1.0 / 9000.0), nLod(9000.0)).r;
-  float b = textureLod(tNoise, CR1 * loc * (1.0 / 14130.0) + 0.37, nLod(14130.0)).r;
-  float c = textureLod(tNoise, loc * (1.0 / 2250.0) + 0.53, nLod(2250.0)).r;
-  float d = textureLod(tNoise, CR2 * loc * (1.0 / 3530.0) + 0.71, nLod(3530.0)).r;
+  float a = textureLod(tNoise, loc * (1.0 / 9000.0) + uCO[0], nLod(9000.0)).r;
+  float b = textureLod(tNoise, CR1 * loc * (1.0 / 14130.0) + uCO[1], nLod(14130.0)).r;
+  float c = textureLod(tNoise, loc * (1.0 / 2250.0) + uCO[2], nLod(2250.0)).r;
+  float d = textureLod(tNoise, CR2 * loc * (1.0 / 3530.0) + uCO[3], nLod(3530.0)).r;
   // averaging two samples flattens the contrast: scale the deviation back up
   return (a * 0.55 + b * 0.45 - 0.5) * 0.7 * 1.3 + (c * 0.5 + d * 0.5 - 0.5) * 0.35 * 1.35;
 }
 // the large scales alone: for the light samples toward the sun, which only shade the cloud
 float cloudShapeLo(vec3 loc) {
-  float a = textureLod(tNoise, loc * (1.0 / 9000.0), nLod(9000.0)).r;
-  float b = textureLod(tNoise, CR1 * loc * (1.0 / 14130.0) + 0.37, nLod(14130.0)).r;
+  float a = textureLod(tNoise, loc * (1.0 / 9000.0) + uCO[0], nLod(9000.0)).r;
+  float b = textureLod(tNoise, CR1 * loc * (1.0 / 14130.0) + uCO[1], nLod(14130.0)).r;
   return (a * 0.55 + b * 0.45 - 0.5) * 0.7 * 1.3;
 }
 float cloudDens(vec3 loc, float hf, float cov, bool detail) {
@@ -184,7 +187,7 @@ float cloudDens(vec3 loc, float hf, float cov, bool detail) {
   float prof = smoothstep(0.0, 0.06, hf) * (1.0 - smoothstep(top * 0.45, top, hf));
   float dd = smoothstep(0.4, 0.62, c) * prof;
   if (dd <= 0.0 || !detail) return dd;
-  float det = textureLod(tNoise, loc * (1.0 / 1125.0) + 0.37, nLod(1125.0)).g;
+  float det = textureLod(tNoise, loc * (1.0 / 1125.0) + uCO[4], nLod(1125.0)).g;
   return clamp((dd - (1.0 - det) * 0.45 * (1.0 - 0.6 * dd)) * 1.8, 0.0, 1.0);
 }
 float hg(float g, float m) { return (1.0 - g * g) / (4.0 * PI * pow(1.0 + g * g - 2.0 * g * m, 1.5)); }
@@ -217,7 +220,7 @@ vec4 marchClouds(vec3 d, vec3 dF, vec3 cF, float b, float tEnd, float muV, out f
     float r = length(pF), hf = (r - uRb) / thick;
     float cov = cloudCov(pF);
     if (cov < 0.12) { s += 2.0; continue; }
-    vec3 loc = uCloudRel + dF * t;
+    vec3 loc = dF * t;
     gFoot = max(1.0, t * uPix * 1.5);
     float den = cloudDens(loc, hf, cov, true) * smoothstep(uVolMax, uVolMax * 0.7, t);
     if (den > 0.004) {
@@ -241,18 +244,44 @@ vec4 marchClouds(vec3 d, vec3 dF, vec3 cF, float b, float tEnd, float muV, out f
 }
 // The cloud layer drawn as a sheet, but with the volume's own shapes: the same coverage and the same noise at the
 // same place, so clouds keep their outlines when the camera climbs out of the volumetric range or looks past it.
-// Returns cover (x) and how much of the cloud lies toward the sun (y, shades the far sides for some relief).
-// Returns cover (x, soft-edged), how much cloud lies toward the sun (y: the far sides go into shade) and the
-// thickness (z: cores are deep and bright on top, the thin margins let the ground show through and look grey).
-vec3 shellVol(vec3 loc, float cov, float foot) {
-  gFoot = max(1.0, foot * 1.5);
+// The sheet at a point: x = cover (0 clear, 1 opaque), y = the cloud's height there (0 base, 1 a full tower).
+// Cover saturates a little way inside each cloud; height keeps rising toward the cores, so every cloud is a dome
+// of lumps rather than a flat-topped slab.
+vec2 sheetDens(vec3 loc, float cov) {
   float c = cov * 1.15 + cloudShape(loc);
   float dd = smoothstep(0.34, 0.7, c);
-  float det = textureLod(tNoise, loc * (1.0 / 1125.0) + 0.37, nLod(1125.0)).g;
+  float det = textureLod(tNoise, loc * (1.0 / 1125.0) + uCO[4], nLod(1125.0)).g;
   dd = clamp((dd - (1.0 - det) * 0.4 * (1.0 - 0.6 * dd)) * 1.4, 0.0, 1.0);
-  vec3 ls = loc + normalize(uSunF - normalize(uCamF) * dot(uSunF, normalize(uCamF))) * 700.0;
-  float cs = cov * 1.15 + cloudShapeLo(ls);
-  return vec3(smoothstep(0.0, 0.8, dd), smoothstep(0.4, 0.62, cs), dd);
+  // the billows on top: 420 m lumps, where a pixel is small enough to show them
+  float fine = gFoot < 600.0 ? (textureLod(tNoise, loc * (1.0 / 420.0) + uCO[5], nLod(420.0)).g - 0.5) * smoothstep(600.0, 150.0, gFoot) : 0.0;
+  return vec2(dd, dd * smoothstep(0.3, 1.05, c + (det - 0.5) * 0.3 + fine * 0.35));
+}
+// Returns cover (x, soft-edged), sunlight on the cloud tops (y) and the column depth (z).
+// Lighting treats the field as a height map, each column as tall as it is dense, and marches toward the sun across
+// it: the sides turned from the sun go into shade, towers cast shadows over their neighbours (long ones when the sun
+// is low), so from high up the clouds read as cumulus with relief, not as flat white cut-outs.
+vec3 shellVol(vec3 loc, float cov, float foot) {
+  gFoot = max(1.0, foot * 1.5);
+  vec2 sd0 = sheetDens(loc, cov);
+  float dd = sd0.x;
+  if (dd <= 0.0) return vec3(0.0, 1.0, 0.0);
+  vec3 up = normalize(uCamF), sh = uSunF - up * dot(uSunF, up);
+  float shl = length(sh), tanE = dot(uSunF, up) / max(shl, 0.05);
+  sh = shl > 1e-4 ? sh / shl : vec3(0.0);
+  // relief in metres, the same on both planets (the billows are the same size on both): a little taller than the
+  // real layer, so the domes are as steep as cumulus look rather than as flat as the thin compact layer would make them
+  float Th = 1800.0, h0 = Th * (0.1 + 0.9 * sd0.y), occ = 0.0;
+  int nS = foot < 250.0 ? 4 : 2;   // far off, the long shadows alone (each step is a full noise lookup)
+  for (int i = 0; i < 4; i++) {
+    if (i >= nS) break;
+    float sd = nS == 2 ? (i == 0 ? 600.0 : 1800.0) : i == 0 ? 220.0 : i == 1 ? 550.0 : i == 2 ? 1200.0 : 2600.0;
+    gFoot = max(gFoot, sd * 0.25);
+    vec2 q = sheetDens(loc + sh * sd, cov);
+    float hs = q.x > 0.05 ? Th * (0.1 + 0.9 * q.y) : 0.0;
+    occ += smoothstep(-0.08 * Th, 0.12 * Th, hs - (h0 + sd * tanE)) * (nS == 2 ? 0.6 : i == 0 ? 0.45 : 0.3);
+  }
+  float lit = 1.0 - 0.88 * min(occ, 1.0);
+  return vec3(smoothstep(0.0, 0.8, dd), lit, sd0.y);
 }
 
 // fields: a jittered grid of cells (Voronoi). Returns the distance to the nearest cell border (in cell
@@ -500,7 +529,7 @@ void main() {
     if (nearG > 0.0) {
       vec3 pG0 = cF + dF * tG, pS0 = pG0 + uSunF * ((uRc - length(pG0)) / max(mu, 0.12));
       gFoot = 400.0;
-      float sc = smoothstep(0.42, 0.62, cloudCov(pS0) * 1.15 + cloudShapeLo(uCloudRel + (pS0 - cF)));
+      float sc = smoothstep(0.0, 0.6, sheetDens(pS0 - cF, cloudCov(pS0)).x);   // the same clouds the sheet draws
       cs = mix(cs, 1.0 - 0.7 * sc, nearG);
     }
     // near the camera the shadows come from the volumetric clouds themselves (where the sun ray from this
@@ -508,7 +537,7 @@ void main() {
     if (uVolK > 0.0 && tG < uVolMax) {
       vec3 pG = cF + dF * tG, pS = pG + uSunF * ((mix(uRb, uRt, 0.22) - length(pG)) / max(mu, 0.12));
       gFoot = 600.0;
-      float dv = cloudDens(uCloudRel + (pS - cF), 0.22, cloudCov(pS), false);
+      float dv = cloudDens(pS - cF, 0.22, cloudCov(pS), false);
       float csV = 1.0 - 0.55 * smoothstep(0.12, 0.3, dv);
       cs = mix(cs, csV, uVolK * smoothstep(uVolMax, uVolMax * 0.6, tG));
     }
@@ -1140,7 +1169,7 @@ void main() {
     // near: the volume's shapes (the noise repeats every few tens of km, so far off the map's own clouds take over)
     float nearK = uNoiseOn > 0.5 ? 1.0 - smoothstep(uVolMax * 1.5, uVolMax * 3.5, tC) : 0.0;
     vec3 sv = vec3(0.0);
-    if (nearK > 0.0) { sv = shellVol(uCloudRel + dF * tC, cloudCov(cnF), tC * uPix); a = mix(a, sv.x, nearK); }
+    if (nearK > 0.0) { sv = shellVol(dF * tC, cloudCov(cnF), tC * uPix); a = mix(a, sv.x, nearK); }
     a *= smoothstep(0.0, 0.02, abs(dot(d, normalize(uCamPos + d * tC))));    // fade at grazing angles through the shell
     a *= mix(1.0, smoothstep(uVolMax * 0.7, uVolMax, tC), uVolK);              // the volume draws the near part
     if (a > 0.003) {
@@ -1148,16 +1177,19 @@ void main() {
       float muC = dot(cn, uSun);
       vec3 Tc = sunT(uRc - uR, muC);
       float self = cloudAlpha(textureLod(tData, lonlat(normalize(cnF + uSunF * 0.004)), 2.0).r, cnF + uSunF * 0.004, 1.0, 1e9);
-      // near: shade the sides turned from the sun, and let thin edges show less bright top
-      self = mix(self, sv.y * 0.9, nearK);
-      float thick = mix(1.0, 0.84 + 0.2 * sv.z, nearK);
+      // near: the height-map light (shaded lee sides, shadows cast across the field); thin margins let the ground
+      // show through and look grey, deep cores are bright
+      self = mix(self, 1.0 - sv.y, nearK);
+      float thick = mix(1.0, 0.5 + 0.6 * sqrt(sv.z), nearK);
       float below = uCC < 0.0 ? 1.0 : 0.0;
       // cloud tops: multiple scattering inside the cloud sends most of the sunlight back up, so a sunlit top is
       // nearly as bright at mid-morning as at noon; the shaded sides stay darker
-      float lit = (0.6 + 0.5 * max(muC, 0.0)) * (1.0 - 0.38 * self) * mix(1.0, 0.32 + 0.3 * (1.0 - a), below) * thick;
+      float lit = (0.6 + 0.5 * max(muC, 0.0)) * (1.0 - mix(0.38, 0.7, nearK) * self) * mix(1.0, 0.32 + 0.3 * (1.0 - a), below) * thick;
       float silver = pow(max(muV, 0.0), 12.0) * (1.0 - a) * 2.5;
       vec3 Eamb = uE * vec3(0.06, 0.09, 0.15) * smoothstep(-0.15, 0.3, muC) + uE * 0.0004;
-      vec3 cc = 0.92 / PI * (uE * Tc * (lit + silver) + Eamb);
+      // matched to the volumetric clouds' brightness (their phase function sends less light toward a camera off the
+      // sun's axis): at full strength the sheet's tops sat far above white, and all their shading clipped away
+      vec3 cc = 0.92 / PI * (uE * Tc * (lit * mix(0.8, 0.44, nearK) + silver) + Eamb);
       vec3 far = (S - S1) + Tall * col;
       result = S1 + T1 * cc * a + (1.0 - a) * far;
     }
@@ -1173,6 +1205,9 @@ void main() {
   #include <colorspace_fragment>
 }`;
 
+// the cloud noise layers as SKY_FRAG samples them: period (m), rotation (column-major, as GLSL's mat3) and offset
+const CR1 = [0.80, 0.36, -0.48, -0.60, 0.48, -0.64, 0.0, 0.80, 0.60], CR2 = [0.36, -0.48, 0.80, 0.48, -0.64, -0.60, 0.80, 0.60, 0.0];
+const CLOUD_LAYERS = [[9000, null, 0], [14130, CR1, 0.37], [2250, null, 0.53], [3530, CR2, 0.71], [1125, null, 0.37], [420, null, 0.19]];
 function skyUniforms(tex) {
   return {
     tDay: { value: tex.day }, tData: { value: tex.data }, tRelief: { value: tex.relief },
@@ -1183,7 +1218,7 @@ function skyUniforms(tex) {
     tTer: { value: null }, uBush3D: { value: 0 }, uCrater: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) }, uCraterN: { value: 0 }, uFlashP: { value: new THREE.Vector4() }, uFlashC: { value: new THREE.Vector3() }, uTerOn: { value: 0 }, uTerK: { value: 0 }, uTA: { value: 1 },
     tLand: { value: null }, tCtl: { value: null }, uTR: { value: 1 }, uTLon0: { value: TLON0 }, uTSite: { value: new THREE.Vector3(1, 0, 0) },
     tGround: { value: null }, uGBig: { value: new THREE.Vector2() }, uGSmall: { value: new THREE.Vector2() }, uGE: { value: new THREE.Vector3(0, 0, -1) }, uGN: { value: new THREE.Vector3(0, 1, 0) },
-    tNoise: { value: null }, uNoiseOn: { value: 0 }, uCloudRel: { value: new THREE.Vector3() }, uFrame: { value: 0 }, uVolK: { value: 0 }, uVolMax: { value: 30000 }, uCB: { value: 1 }, uCT: { value: 1 }, uRb: { value: 1 }, uRt: { value: 1 },
+    tNoise: { value: null }, uNoiseOn: { value: 0 }, uCO: { value: [0, 1, 2, 3, 4, 5].map(() => new THREE.Vector3()) }, uFrame: { value: 0 }, uVolK: { value: 0 }, uVolMax: { value: 30000 }, uCB: { value: 1 }, uCT: { value: 1 }, uRb: { value: 1 }, uRt: { value: 1 },
   };
 }
 
@@ -1235,9 +1270,14 @@ export function updateSky(sky, { camera, camPos, theta, planet, sunDir, siteFixe
   if (siteFixed) u.uCamSite.value.copy(cf).addScaledVector(siteFixed, -R); else u.uCamSite.value.set(1e9, 0, 0);
   const P = DETAIL_PERIOD;
   u.uCamRel.value.set(cf.x - Math.round(cf.x / P) * P, cf.y - Math.round(cf.y / P) * P, cf.z - Math.round(cf.z / P) * P);
-  // cloud noise coordinates: camera minus the wind's drift (12 m/s westward, slight north), wrapped to the noise tiles
-  const CP = 36000, wx = cf.x + 9 * time, wy = cf.y - 3 * time, wz = cf.z + 7 * time;
-  u.uCloudRel.value.set(wx - Math.round(wx / CP) * CP, wy - Math.round(wy / CP) * CP, wz - Math.round(wz / CP) * CP);
+  // cloud noise coordinates: the camera plus the wind's drift (12 m/s westward, slight north), placed in each noise
+  // layer's tile (scale, rotation and offset exactly as the shader samples it), wrapped in doubles
+  const wx = cf.x + 9 * time, wy = cf.y - 3 * time, wz = cf.z + 7 * time;
+  CLOUD_LAYERS.forEach(([P, M, o], i) => {
+    const x = M ? M[0] * wx + M[3] * wy + M[6] * wz : wx, y = M ? M[1] * wx + M[4] * wy + M[7] * wz : wy, z = M ? M[2] * wx + M[5] * wy + M[8] * wz : wz;
+    const fr = (v) => { v = v / P + o; return v - Math.floor(v); };
+    u.uCO.value[i].set(fr(x), fr(y), fr(z));
+  });
   if (siteFixed) { u.uSite.value.copy(siteFixed); u.uTSite.value.copy(siteFixed); }
   // ground-detail mapping: a tangent frame anchored near the camera (re-anchored when far away), camera
   // coordinates in it wrapped to the detail tiles, so the per-pixel lookups stay small and seamless
