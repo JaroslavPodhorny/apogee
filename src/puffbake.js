@@ -7,9 +7,11 @@
 // flanks, shadowed creases and bright rims when back-lit, from any angle, at the cost of two texture reads.
 // Output: two RGBA atlases of 2×2 puffs. A = light from (+x, −x, +y) and alpha, B = light from (−y, +z, −z);
 // +z faces the camera. Light values are stored as √ (more precision in the shadows) and un-premultiplied.
+// The bake is slow (seconds at a sharp size), so it is done offline: `node tools/bake-puffs.mjs` writes the atlases to
+// assets/smoke/ and the game loads them (loadPuffs).
 import * as THREE from '../vendor/three.module.js';
 
-export function bakePuffs(N = 160) {
+export function bakePuffData(N = 256) {
   const W = N * 2, A = new Uint8Array(W * W * 4), B = new Uint8Array(W * W * 4);
   const V = N * N * N, rho = new Float32Array(V), px = new Float32Array(V), py = new Float32Array(V);
   let s = 23; const R = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
@@ -93,8 +95,20 @@ export function bakePuffs(N = 160) {
       if (n) { A[o] = acc[0] / n; A[o + 1] = acc[1] / n; A[o + 2] = acc[2] / n; B[o] = acc[3] / n; B[o + 1] = acc[4] / n; B[o + 2] = acc[5] / n; }
     }
   }
-  const tex = (d) => { const t = new THREE.DataTexture(d, W, W); t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.generateMipmaps = true; t.needsUpdate = true; return t; };
-  return { A: tex(A), B: tex(B) };
+  return { A, B, W };
+}
+
+// The baked atlases, as textures. Decoded without premultiplying alpha and without colour conversion: the light values
+// are data, and they are kept round the puffs' edges, where the alpha is zero (a premultiplied decode would wipe them
+// out and fringe every puff dark). The rows are stored bottom first, as WebGL wants them.
+export function loadPuffs(base = 'assets/smoke/') {
+  const L = new THREE.ImageBitmapLoader().setOptions({ premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+  const tex = (file) => {
+    const t = new THREE.Texture(); t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.generateMipmaps = true; t.flipY = false;
+    L.load(base + file, (bmp) => { t.image = bmp; t.needsUpdate = true; });
+    return t;
+  };
+  return { A: tex('puffs-a.png'), B: tex('puffs-b.png') };
 }
 
 // Fine detail laid over the baked puffs (stylised, not simulated): a tileable field of small cauliflower domes with

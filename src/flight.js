@@ -1163,7 +1163,7 @@ export class Flight {
       this.sun.update(cam, cp, this.sunDir, pl.R, this.sunCol, occ, THREE.MathUtils.clamp(1 - camAlt / pl.atmTop, 0, 1), this.terVis ?? 1);
     }
     this.smoke.update(photo || this.paused ? 0 : this.simDt, pl, this.origin, cam, up, sPos.dot(up));
-    this.sparks.viewH = this.ph; this.sparks.budget = gfx.fx === 'low' ? 0.4 : 1;
+    this.sparks.viewH = this.ph; this.smoke.viewH = this.ph; this.booms.cloud && (this.booms.cloud.viewH = this.ph); this.sparks.budget = gfx.fx === 'low' ? 0.4 : 1;
     this.sparks.update(photo || this.paused ? 0 : this.simDt, pl, this.origin, cam, a ? a.v : new THREE.Vector3(), 1 / 50);
     {
       const tr = this.terrain, th2 = theta;

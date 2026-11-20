@@ -7,10 +7,10 @@
 //   shadowed sides take the sky colour, fresh exhaust glows from the flame.
 // Positions live in the planet-centred frame (doubles) and are drawn relative to the floating origin.
 import * as THREE from '../vendor/three.module.js';
-import { bakePuffs, detailTex } from './puffbake.js';
+import { loadPuffs, detailTex } from './puffbake.js';
 
 const MAX_DEFAULT = 2400;
-let puffs = null; const PUFFS = () => (puffs ||= { ...bakePuffs(), det: detailTex() });   // baked once, shared by every smoke system
+let puffs = null; const PUFFS = () => (puffs ||= { ...loadPuffs(), det: detailTex() });   // loaded once, shared by every smoke system
 
 // A sparse 3D grid of smoke density (open-addressed hash on integer cells), rebuilt every frame from the puffs.
 // Puffs are splatted trilinearly into the lattice; lookups take the nearest lattice point.
@@ -79,15 +79,16 @@ export class Smoke {
     this.mat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false,
       uniforms: {
-        tA: { value: PUFFS().A }, tB: { value: PUFFS().B }, tDet: { value: PUFFS().det }, uStyle: { value: 0 }, uGndCol: { value: new THREE.Vector3(0.05, 0.045, 0.035) }, uSunCol: { value: new THREE.Vector3(1, 1, 1) }, uAmb: { value: new THREE.Vector3(0.2, 0.2, 0.25) },
+        tA: { value: PUFFS().A }, tB: { value: PUFFS().B }, tDet: { value: PUFFS().det }, uStyle: { value: 0 }, uPxK: { value: 800 }, uGndCol: { value: new THREE.Vector3(0.05, 0.045, 0.035) }, uSunCol: { value: new THREE.Vector3(1, 1, 1) }, uAmb: { value: new THREE.Vector3(0.2, 0.2, 0.25) },
         uSunV: { value: new THREE.Vector3(0, 1, 0) }, uUpV: { value: new THREE.Vector3(0, 1, 0) }, uGroundD: { value: -1e9 }, uFlameV: { value: new THREE.Vector3() }, uFlameI: { value: 0 }, uFlameCol: { value: new THREE.Color(1, 0.55, 0.2) }, uTint: { value: new THREE.Color(1, 1, 1) }, uHeatCol: { value: new THREE.Color(1, 0.32, 0.06) },
       },
       vertexShader: /* glsl */`
         attribute vec3 iPos; attribute vec4 iData; attribute float iVar; attribute vec3 iLit, iVel;
-        uniform vec3 uSunV, uUpV, uFlameV; uniform float uGroundD, uFlameI;
-        varying vec2 vUv, vCell, vOff; varying float vA, vH, vGround, vSoot, vDet; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
+        uniform vec3 uSunV, uUpV, uFlameV; uniform float uGroundD, uFlameI, uPxK;
+        varying vec2 vUv, vCell, vOff; varying float vA, vH, vGround, vSoot, vDet, vPx; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
         void main() {
           vec4 mv = modelViewMatrix * vec4(iPos, 1.0);
+          vPx = iData.x * uPxK / max(-mv.z, 0.1);   // how many pixels across the puff is on screen
           // the flame lights the smoke round the pad: the 1/d² of a point light, softened by the puff's own size
           vec3 dF = uFlameV - mv.xyz; float d2 = dot(dF, dF);
           vFl = uFlameI / (d2 * 0.7 + iData.x * iData.x * 0.08 + 1.0) * exp(-sqrt(d2) / 45.0);   // the steam itself scatters the glow away: it stays round the base
@@ -112,7 +113,7 @@ export class Smoke {
         }`,
       fragmentShader: /* glsl */`
         uniform sampler2D tA, tB, tDet; uniform vec3 uSunCol, uAmb, uSunV, uGndCol, uFlameCol, uTint, uHeatCol; uniform float uStyle;
-        varying vec2 vUv, vCell, vOff; varying float vA, vH, vGround, vSoot, vDet; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
+        varying vec2 vUv, vCell, vOff; varying float vA, vH, vGround, vSoot, vDet, vPx; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
         vec3 lA, lB;
         // the baked puff lit from direction L (toward the light): the six lightings, weighted by L's components squared
         float six(vec3 L) { vec3 p = max(L, 0.0), n = max(-L, 0.0); p *= p; n *= n; return dot(lA, vec3(p.x, n.x, p.y)) + dot(lB, vec3(n.y, p.z, n.z)); }
@@ -128,6 +129,11 @@ export class Smoke {
           float hd = q1.r * 0.65 + q2.r * 0.35;
           float rim = 1.0 - smoothstep(0.45, 0.95, A.a);
           float al = clamp((A.a + (hd - 0.42) * 0.9 * rim - 0.06) * 1.25, 0.0, 1.0);
+          // a crisp outline at any size: the baked edge fades over a texel or two of the puff texture, which on a puff
+          // filling a good part of the screen became a blurry band dozens of pixels wide. Narrow the fade to about
+          // two pixels on screen; a small, distant puff keeps its soft edge as it was
+          float ew = clamp(100.0 / max(vPx, 1.0), 0.15, 1.0);
+          al = clamp((al - 0.5) / ew + 0.5, 0.0, 1.0);
           float a = al * vA * smoothstep(0.0, 1.0, clamp(vGround, 0.0, 1.0));
           // toon styles (uStyle 1 toon, 2 soft toon): a crisp silhouette cut from the soft baked shape (sharp at any size,
           // like a distance field), and a puff fades by shrinking into itself rather than turning see-through
@@ -280,7 +286,7 @@ export class Smoke {
     this.geo.instanceCount = n;
     for (const a of [this.aPos, this.aData, this.aVar, this.aLit]) { a.needsUpdate = true; a.clearUpdateRanges(); a.addUpdateRange(0, Math.max(1, n) * a.itemSize); }
     const u = this.mat.uniforms, vm = camera.matrixWorldInverse;
-    u.uFlameI.value = 0;
+    u.uFlameI.value = 0; u.uPxK.value = (this.viewH || 800) / (2 * Math.tan((camera.fov * Math.PI) / 360));
     if (groundUp) { u.uUpV.value.copy(groundUp).transformDirection(vm); const gp = groundUp.clone().multiplyScalar(groundDist).applyMatrix4(vm); u.uGroundD.value = gp.dot(u.uUpV.value); } else u.uGroundD.value = -1e9;
   }
   endTrails(keep) { for (const k of [...this.trails.keys()]) if (!keep.has(k)) this.trails.delete(k); }
@@ -459,6 +465,7 @@ export class Smoke {
     // ground plane in view space, for the soft fade where puffs meet it
     const u = this.mat.uniforms, vm = camera.matrixWorldInverse;
     const FL = this.flameLight;
+    u.uPxK.value = (this.viewH || 800) / (2 * Math.tan((camera.fov * Math.PI) / 360));   // pixels per radian of view
     if (FL && FL.intensity > 0) { u.uFlameV.value.copy(FL.position).applyMatrix4(vm); u.uFlameI.value = FL.intensity * 0.9; u.uFlameCol.value.copy(FL.color); } else u.uFlameI.value = 0;
     if (groundUp) {
       u.uUpV.value.copy(groundUp).transformDirection(vm);
