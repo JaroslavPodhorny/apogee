@@ -7,7 +7,6 @@ import { partMesh, lightMats, interstageMesh, fairingHalfMesh, frostMaterial, MA
 import { makeSkyPlanet, makeMapPlanet, updateSky, sunTransmittance, SUN_E } from './planet.js';
 import { Terrain } from './terrain.js';
 import { cloudNoise, groundDetail } from './clouds.js';
-import { SmokeVolume } from './smokevol.js';
 import { Smoke, Sparks, plumeMaterial, plumeGeo, fireballGeo, fireballMaterial, plasmaGeo, plasmaCapGeo, plasmaMaterials, vaporGeo, vaporMaterial } from './fx.js';
 import { Scatter } from './scatter.js';
 import { gfx, onGfx } from './gfx.js';
@@ -183,10 +182,10 @@ export class Flight {
     this.sunLight.shadow.bias = -0.0004; this.sunLight.shadow.normalBias = 0.04;
     scene.add(this.sunLight, this.sunLight.target);
     this.envT = 1e9; this.envRT = null; this.exposure = 1;
-    this.smoke = new Smoke(gfx.fx === 'low' ? 2400 : 5000); scene.add(this.smoke.mesh);   // room for the launch cloud and the trail together
+    this.smoke = new Smoke(gfx.fx === 'low' ? 3500 : 9000); scene.add(this.smoke.mesh);   // room for the launch cloud and the trail together
     this.sparks = new Sparks(); scene.add(this.sparks.mesh);
     // the launch cloud as a real volume (graphics option); the sprites draw whatever lies outside it
-    (this.smokeVol ||= new SmokeVolume(this.renderer, cloudNoise())).clear(); scene.add(this.smokeVol.comp); this.smoke.vol = this.smokeVol;
+    this.padLobes = null;
     this.engineLight = new THREE.PointLight(0xffaa66, 0, 0, 2); scene.add(this.engineLight); this.smoke.flameLight = this.engineLight;   // always present: switching a light on never recompiles shaders
     this.sun = new Sun(); scene.add(this.sun.mesh, this.sun.flare);
     this.sky.material.uniforms.uSunDisc.value = 0;
@@ -704,8 +703,9 @@ export class Flight {
     const imp = 1 - THREE.MathUtils.smoothstep(hn, Lfull * 0.7, Lfull * 1.5 + 10);
     const size0 = er * (solid ? 3.0 : 2.3), size1 = (er * (solid ? 14 : 10) + (solid ? 10 : 6)) * thin * (1 + 1.3 * gk);
     const om = this.world.planet.omega, air = new THREE.Vector3(om * noz.z, 0, -om * noz.x);
-    this.smoke.trail(p.id, noz, air, down, {
-      size0, size1, life: (solid ? 22 : 14) * (0.5 + 0.5 * pw) * (1 + 1.2 * gk), opacity: Math.min(1, pr * 3 * (solid ? 1 : 0.7) * (0.5 + 0.5 * pw)) * (1 - 0.9 * imp),
+    // while the jet still hits the pad the launch cloud is the smoke: a faint trail inside it would only fog it
+    if (imp < 0.97) this.smoke.trail(p.id, noz, air, down, {
+      size0, size1, life: (solid ? 22 : 14) * (0.5 + 0.5 * pw) * (1 + 1.2 * gk), opacity: Math.min(1, pr * 3 * (solid ? 1 : 0.7) * (0.5 + 0.5 * pw)) * (1 - imp),
       push: 40 + 20 * gk, spacing: Math.max(size0 * 0.25, sAir / 220), minRate: (solid ? 40 : 30) * (1 + gk), offset,
       heat: gk > 0 ? 0.5 : 0.55,      // fresh exhaust still glows faintly where it leaves the flame, then cools to smoke
       // smoke leaves the end of the flame still moving with the rocket, then brakes: the trail continues the flame's line
@@ -713,23 +713,46 @@ export class Flight {
     }, this.simDt);
     // liftoff: the water deluge flashes to steam and great white billows roll out across the pad in every direction
     if (imp > 0.02 && this.simDt > 0) {
-      const up = noz.clone().normalize(), e1 = new THREE.Vector3().crossVectors(up, Math.abs(up.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize(), e2 = new THREE.Vector3().crossVectors(up, e1);
+      const up = noz.clone().normalize();
       const g0 = noz.clone().addScaledVector(up, -hn);
-      // the volumetric cloud's box settles on the ground under the first billows (in the planet's turning frame)
-      if (!this.smokeVol.anchorF) this.smokeVol.anchor(g0.clone().applyAxisAngle(Y_AXIS, -this.world.theta()));
-      // bigger engines raise a bigger cloud: billows grow and linger with the engine's thrust (a light rocket's
-      // puffs ~25 m, a heavy lifter's well over 60 m, rolling across the pad for a minute)
-      const K = THREE.MathUtils.clamp(Math.sqrt(p.def.engine.thrust / 1e6), 0.6, 2.6);
-      const n = Math.min(8, Math.floor((this.billowAcc = (this.billowAcc || 0) + this.simDt * 38 * imp * (0.4 + 0.6 * pw) * (solid ? 1.3 : 1) * (0.8 + 0.25 * K))));
+      // The launch cloud is many small billows, not a few that swell: a real one gains its volume from the
+      // deluge steam it keeps making, each lobe staying crisp. Most of the exhaust is thrown down the flame
+      // channel in a racing ground jet; the rest bursts out round the pad in a few great lobes (set once per
+      // launch). The jets brake within a couple of hundred metres and, where they stall, the hot steam climbs
+      // in towers. Bigger engines throw it faster and farther and make more of it.
+      const K = THREE.MathUtils.clamp(Math.sqrt(p.def.engine.thrust / 1e6), 0.6, 2.6), sk = Math.sqrt(K);
+      const sUp = this.world.siteDir(), sE = new THREE.Vector3().crossVectors(Y_AXIS, sUp).normalize();
+      const chan = new THREE.Vector3().crossVectors(sE, sUp).negate();      // the flame channel leads the exhaust this way
+      let lobes = this.padLobes;
+      if (!lobes) {
+        lobes = this.padLobes = Array.from({ length: 4 }, (_, i) => (i + 0.3 + Math.random() * 0.4) * Math.PI / 2);
+        // towers: where each jet runs out of push the hot steam piles up and climbs; the flame channel's jet runs
+        // farthest and raises the biggest. A couple more stand close in, over the deluge
+        const site = (a, dist, rad, str) => { const pt = g0.clone().addScaledVector(chan.clone().applyAxisAngle(up, a), dist); this.smoke.towers.push(...this.smoke.toGround(pt), rad, str); };
+        const reach = 0.7 + 0.3 * K;
+        site((Math.random() - 0.5) * 0.3, (150 + 60 * Math.random()) * reach, 55 * reach, 6);
+        for (const a of lobes) site(a + (Math.random() - 0.5) * 0.3, (90 + 60 * Math.random()) * reach, (35 + 15 * Math.random()) * reach, 3.5 + 3 * Math.random());
+        for (let t = 0; t < 2; t++) site(Math.random() * 6.28, (30 + 40 * Math.random()) * reach, 30 * reach, 2.5);
+      }
+      const rate = 170 * imp * (0.35 + 0.65 * pw) * (solid ? 1.25 : 1) * (0.6 + 0.4 * K) * (gfx.fx === 'low' ? 0.45 : 1);
+      const n = Math.min(40, Math.floor((this.billowAcc = (this.billowAcc || 0) + this.simDt * rate)));
       this.billowAcc -= n;
+      const dir = new THREE.Vector3();
       for (let i = 0; i < n; i++) {
-        const a = Math.random() * Math.PI * 2, dir = e1.clone().multiplyScalar(Math.cos(a)).addScaledVector(e2, Math.sin(a));
-        // born at the edge of the splash, already racing outward along the ground, hot and lit by the flame
-        const sp = Math.max(er * 2, (Lfull - hn) * 0.25 + er * 2);
-        const pos = g0.clone().addScaledVector(dir, sp * (0.8 + Math.random() * 0.6)).addScaledVector(up, er * (0.6 + Math.random() * 1.5));
-        const vel = dir.multiplyScalar(25 + Math.random() * 30).addScaledVector(up, 1 + Math.random() * 7).add(air);
-        const id = this.smoke.emit(pos, vel, er * 3 + 2, (er * 10 + 24) * (0.55 + 0.45 * K) * (0.8 + Math.random() * 0.5), (24 + Math.random() * 20) * (0.8 + 0.2 * K), 0.8, g0, Math.min(1, 0.6 + 0.4 * pw) * imp);
-        this.smoke.f[id * 10 + 8] = 1;     // already on the ground: it billows up from here
+        const r = Math.random(), inChan = r < 0.42;
+        if (inChan) dir.copy(chan).applyAxisAngle(up, (Math.random() + Math.random() - 1) * 0.28);
+        else {
+          const a = r < 0.9 ? lobes[Math.floor(Math.random() * 4)] + (Math.random() - 0.5) * 0.7 : Math.random() * Math.PI * 2;
+          dir.copy(chan).applyAxisAngle(up, a);
+        }
+        // born at the edge of the splash, racing outward along the ground, hot and lit by the flame
+        const sp = Math.max(er * 2, (Lfull - hn) * 0.2 + er * 2);
+        const pos = g0.clone().addScaledVector(dir, sp * (0.6 + Math.random() * 0.8)).addScaledVector(up, er * (0.3 + Math.random()) + 1);
+        const v0 = (28 + 34 * Math.random()) * (0.7 + 0.3 * K) * (inChan ? 1.35 : 1);
+        const vel = dir.clone().multiplyScalar(v0).addScaledVector(up, Math.random() * 6).add(air);
+        const s0 = (7 + 5 * Math.random()) * sk;
+        const id = this.smoke.emit(pos, vel, s0, s0 * (1.6 + 0.6 * Math.random()), (26 + Math.random() * 22) * (0.8 + 0.2 * K), 0.8, g0, Math.min(1, 0.6 + 0.4 * pw) * imp);
+        this.smoke.pad(id, 0.45 + 0.4 * Math.random(), (1.5 + 3 * Math.random()) * (0.8 + 0.2 * K));
       }
     }
   }
@@ -1107,9 +1130,8 @@ export class Flight {
       const occ = [this.site.children[1]]; for (const vw of this.views.values()) occ.push(vw.body);
       this.sun.update(cam, cp, this.sunDir, pl.R, this.sunCol, occ, THREE.MathUtils.clamp(1 - camAlt / pl.atmTop, 0, 1), this.terVis ?? 1);
     }
-    this.smokeVol.ready = gfx.smoke === 'volumetric' && this.smokeVol.place(theta);
     this.smoke.update(photo || this.paused ? 0 : this.simDt, pl, this.origin, cam, up, sPos.dot(up));
-    this.sparks.viewH = this.ph; this.sparks.budget = gfx.fx === 'low' ? 0.4 : 1; this.smoke.setLite(gfx.fx === 'low');
+    this.sparks.viewH = this.ph; this.sparks.budget = gfx.fx === 'low' ? 0.4 : 1;
     this.sparks.update(photo || this.paused ? 0 : this.simDt, pl, this.origin, cam, a ? a.v : new THREE.Vector3(), 1 / 50);
     {
       const tr = this.terrain, th2 = theta;
@@ -1140,27 +1162,11 @@ export class Flight {
       this.sky.material.uniforms.uFrame.value = this.frameN || 0;
       const r = this.renderer; r.setRenderTarget(this.skyRT); r.render(this.skyScene, cam); r.setRenderTarget(null);
       this.scene.background = this.resolveSky(cam, sw, sh, this.pw, this.ph);
-      this.renderSmokeVolume(cam, sw, sh);
     }
     this.renderPass.scene = this.scene; this.renderPass.camera = cam;
     applyTone(this.renderer, this.exposure * (photo?.gain ?? 1));
     this.bloom.enabled = gfx.bloom;
     this.composer.render(dt);
-  }
-
-  // The volumetric launch cloud (smokevol.js): lit like the sprites, by the same sun, sky, ground and flame.
-  renderSmokeVolume(cam, sw, sh) {
-    const V = this.smokeVol;
-    if (!V.ready || !V.n) { V.comp.visible = false; return; }
-    const su = this.smoke.mat.uniforms, L = this.engineLight, fog = this.scene.fog;
-    const flameB = V.toVoxels(L.position.clone().add(this.origin), new THREE.Vector3());
-    V.render(this.scene, cam, this.origin, sw, sh, {
-      sunB: V.dirToBox(this.sunDir, new THREE.Vector3()), sunCol: su.uSunCol.value, amb: su.uAmb.value, gnd: su.uGndCol.value,
-      flameB, flameI: L.intensity > 0 ? L.intensity * 0.9 : 0, flameCol: L.color,
-      time: this.time, frame: this.frameN || 0, fog: fog ? fog.density : 0, fogCol: fog ? new THREE.Vector3(fog.color.r, fog.color.g, fog.color.b) : new THREE.Vector3(),
-      // (the terrain is the flat pad under the box, which the box's floor already stands for: drawing it cost 4 ms)
-      hide: [this.smoke.mesh, this.sparks.mesh, V.comp, this.terrain?.group, this.terrain?.bushes?.group, this.sun.mesh, this.sun.flare],
-    });
   }
 
   // Terrain: choose patches around the camera and draw their distance, height and normal into a small

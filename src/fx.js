@@ -7,67 +7,10 @@
 //   shadowed sides take the sky colour, fresh exhaust glows from the flame.
 // Positions live in the planet-centred frame (doubles) and are drawn relative to the floating origin.
 import * as THREE from '../vendor/three.module.js';
+import { bakePuffs } from './puffbake.js';
 
 const MAX_DEFAULT = 2400;
-
-// 2×2 atlas of cauliflower puffs: big lobes, a ring of billows and a fringe of small bumps, so the
-// outline is lumpy and crisp. R = density (the painted coverage), G = the same blurred: a smooth dome
-// used as height, so each puff is lit like a lumpy ball; B/A = the dome's slope (baked, saves four reads a pixel).
-function puffAtlas() {
-  const n = 512, h = n / 2, c = document.createElement('canvas'); c.width = c.height = n; const g = c.getContext('2d');
-  let s = 11; const R = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
-  const blob = (x, y, rr, a) => { const gr = g.createRadialGradient(x, y, 0, x, y, rr); gr.addColorStop(0, `rgba(255,255,255,${a})`); gr.addColorStop(0.55, `rgba(255,255,255,${a * 0.55})`); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(x - rr, y - rr, rr * 2, rr * 2); };
-  for (let q = 0; q < 4; q++) {
-    const ox = (q % 2) * h, oy = Math.floor(q / 2) * h, cx = ox + h / 2, cy = oy + h / 2;
-    g.save(); g.beginPath(); g.rect(ox, oy, h, h); g.clip();
-    for (let i = 0; i < 30; i++) { const a = R() * 6.283, d = Math.pow(R(), 0.7) * h * 0.2; blob(cx + Math.cos(a) * d, cy + Math.sin(a) * d, h * (0.12 + R() * 0.15), 0.5); }
-    for (let i = 0; i < 70; i++) { const a = R() * 6.283, d = h * (0.2 + R() * 0.1); blob(cx + Math.cos(a) * d, cy + Math.sin(a) * d * 0.95, h * (0.05 + R() * 0.06), 0.55); }
-    for (let i = 0; i < 160; i++) { const a = R() * 6.283, d = h * (0.27 + R() * 0.08); blob(cx + Math.cos(a) * d, cy + Math.sin(a) * d * 0.95, h * (0.018 + R() * 0.03), 0.6); }
-    g.restore();
-  }
-  const den = g.getImageData(0, 0, n, n).data;
-  const [, bg] = (() => { const b = document.createElement('canvas'); b.width = b.height = n; return [b, b.getContext('2d', { willReadFrequently: true })]; })();
-  bg.filter = 'blur(9px)'; bg.drawImage(c, 0, 0); const dome = bg.getImageData(0, 0, n, n).data;
-  const data = new Uint8Array(n * n * 4);
-  const E = 3;   // ±0.012 of a puff, in atlas pixels
-  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
-    const i = (y * n + x) * 4, at = (xx, yy) => dome[(Math.min(n - 1, Math.max(0, yy)) * n + Math.min(n - 1, Math.max(0, xx))) * 4 + 3] / 255;
-    data[i] = den[i + 3]; data[i + 1] = dome[i + 3];
-    data[i + 2] = Math.max(0, Math.min(255, 128 + (at(x + E, y) - at(x - E, y)) * 254));
-    data[i + 3] = Math.max(0, Math.min(255, 128 + (at(x, y + E) - at(x, y - E)) * 254));
-  }
-  const t = new THREE.DataTexture(data, n, n); t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.generateMipmaps = true; t.needsUpdate = true;
-  return t;
-}
-
-// Tileable cauliflower detail: three octaves of inverted cellular noise (round domes packed together, like the
-// billows on a cumulus), R = height, G/B = its slope (for the normal). Sampled in metres, so a big puff shows many
-// billows and a small one a few, and every puff's edge breaks up into lobes instead of a soft round blur.
-function detailTex() {
-  const n = 256, hgt = new Float32Array(n * n);
-  let s = 5; const R = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
-  for (const [f, w] of [[5, 0.58], [11, 0.3], [23, 0.12]]) {
-    const pts = new Float32Array(f * f * 2); for (let i = 0; i < f * f * 2; i++) pts[i] = R();
-    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
-      const u = x / n * f, v = y / n * f, cx = Math.floor(u), cy = Math.floor(v);
-      let d1 = 9;
-      for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
-        const gx = cx + i, gy = cy + j, k = (((gy % f) + f) % f) * f + (((gx % f) + f) % f);
-        const dx = gx + pts[k * 2] - u, dy = gy + pts[k * 2 + 1] - v; d1 = Math.min(d1, dx * dx + dy * dy);
-      }
-      hgt[y * n + x] += w * Math.sqrt(Math.max(0, 1 - d1 / 0.36));   // a dome over each cell point, deep creases between them
-    }
-  }
-  const data = new Uint8Array(n * n * 4);
-  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
-    const i = y * n + x, h = hgt[i];
-    const gx = (hgt[y * n + ((x + 1) % n)] - hgt[y * n + ((x + n - 1) % n)]) * n / 2, gy = (hgt[((y + 1) % n) * n + x] - hgt[((y + n - 1) % n) * n + x]) * n / 2;
-    data[i * 4] = Math.min(255, h * 255); data[i * 4 + 1] = Math.max(0, Math.min(255, 128 + gx)); data[i * 4 + 2] = Math.max(0, Math.min(255, 128 + gy)); data[i * 4 + 3] = 255;
-  }
-  const t = new THREE.DataTexture(data, n, n); t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.generateMipmaps = true; t.needsUpdate = true;
-  return t;
-}
+let puffs = null; const PUFFS = () => (puffs ||= bakePuffs());   // baked once, shared by every smoke system
 
 // A sparse 3D grid of smoke density (open-addressed hash on integer cells), rebuilt every frame from the puffs.
 // Puffs are splatted trilinearly into the lattice; lookups take the nearest lattice point.
@@ -103,6 +46,22 @@ class DensityGrid {
 // where the light is sampled on its way to a puff: distances (m) along the ray past the puff's own edge
 const SUN_STEPS = [3, 8, 15, 25, 40, 60, 90, 130, 185, 260], SKY_STEPS = [5, 14, 30, 55, 100], LIGHT_K = 0.3;
 
+// Turbulence round the pad: a sum of travelling plane waves u = Σ aᵢ cos(kᵢ·x − ωᵢt + φᵢ) with every aᵢ ⟂ kᵢ, so the
+// flow has no divergence: it swirls and folds the cloud without squeezing it into clumps or pulling holes.
+// Eddies from 150 m down to 12 m, their speed ∝ size^⅓ (Kolmogorov) and each turning over in about its own
+// crossing time. Fixed in the planet's turning frame (the pad's air), normalised to about unit rms speed.
+const TURB = (() => {
+  let s = 91; const R = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+  const m = [];
+  for (const L of [170, 110, 70, 45, 30]) for (let q = 0; q < 2; q++) {
+    const k = new THREE.Vector3(), a = new THREE.Vector3(R() - 0.5, R() - 0.5, R() - 0.5);
+    k.set(R() - 0.5, (R() - 0.5) * 0.6, R() - 0.5).normalize();
+    a.addScaledVector(k, -a.dot(k)).normalize().multiplyScalar(Math.cbrt(L / 150) * 0.42);
+    const kk = 6.2832 / L;
+    m.push(k.x * kk, k.y * kk, k.z * kk, a.x, a.y, a.z, kk * 7 * (0.7 + 0.6 * R()), R() * 6.2832);
+  }
+  return new Float64Array(m);
+})();
 export class Smoke {
   // max: how many puffs at once (the launch cloud and trail share them; full, the most faded are recycled)
   constructor(max = MAX_DEFAULT) {
@@ -119,98 +78,66 @@ export class Smoke {
     this.mat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false,
       uniforms: {
-        tPuff: { value: puffAtlas() }, tDet: { value: detailTex() }, uGndCol: { value: new THREE.Vector3(0.05, 0.045, 0.035) }, uSunCol: { value: new THREE.Vector3(1, 1, 1) }, uAmb: { value: new THREE.Vector3(0.2, 0.2, 0.25) },
+        tA: { value: PUFFS().A }, tB: { value: PUFFS().B }, uGndCol: { value: new THREE.Vector3(0.05, 0.045, 0.035) }, uSunCol: { value: new THREE.Vector3(1, 1, 1) }, uAmb: { value: new THREE.Vector3(0.2, 0.2, 0.25) },
         uSunV: { value: new THREE.Vector3(0, 1, 0) }, uUpV: { value: new THREE.Vector3(0, 1, 0) }, uGroundD: { value: -1e9 }, uFlameV: { value: new THREE.Vector3() }, uFlameI: { value: 0 }, uFlameCol: { value: new THREE.Color(1, 0.55, 0.2) }, uTint: { value: new THREE.Color(1, 1, 1) }, uHeatCol: { value: new THREE.Color(1, 0.32, 0.06) },
       },
       vertexShader: /* glsl */`
         attribute vec3 iPos; attribute vec4 iData; attribute float iVar; attribute vec3 iLit;
         uniform vec3 uSunV, uUpV, uFlameV; uniform float uGroundD, uFlameI;
-        varying vec2 vUv; varying vec2 vCell; varying vec2 vLight; varying float vA, vH, vGround, vSoot, vDet; varying vec2 vRot0, vOff; varying vec3 vLit; varying float vFl; varying vec3 vFd;
+        varying vec2 vUv, vCell; varying float vA, vH, vGround, vSoot; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
         void main() {
           vec4 mv = modelViewMatrix * vec4(iPos, 1.0);
           // the flame lights the smoke round the pad: the 1/d² of a point light, softened by the puff's own size
-          vec3 dF = uFlameV - mv.xyz; vFl = uFlameI / (dot(dF, dF) * 0.35 + iData.x * iData.x * 0.08 + 1.0); vFl /= 1.0 + vFl * 0.05;   // soft cap: right by the flame it would burn out to flat white vFd = normalize(dF + vec3(0.0, 0.0, 1e-3));
-          float c = cos(iData.w), s = sin(iData.w);
+          vec3 dF = uFlameV - mv.xyz; float d2 = dot(dF, dF);
+          vFl = uFlameI / (d2 * 0.7 + iData.x * iData.x * 0.08 + 1.0) * exp(-sqrt(d2) / 60.0);   // the steam itself scatters the glow away: it stays round the base
+          vFl /= 1.0 + vFl * 0.05;   // soft cap: right by the flame it would burn out to flat white
+          float c = cos(iData.w), s = sin(iData.w); mat2 m = mat2(c, -s, s, c);
           mv.xy += position.xy * iData.x;
-          vUv = mat2(c, -s, s, c) * position.xy + 0.5;
-          float cell = mod(iVar, 4.0); vSoot = mod(floor(iVar / 4.0 + 0.01), 8.0) / 7.0;
-          float seed = floor(iVar / 32.0 + 0.01);
-          vOff = vec2(fract(seed * 0.618), fract(seed * 0.382 + 0.25));
-          vDet = clamp(iData.x / 34.0, 0.45, 7.0);   // billows about 8 m across, whatever the puff's size
-          vCell = vec2(mod(cell, 2.0), floor(cell / 2.0)) * 0.5;
-          vec2 l = uSunV.xy; float ll = length(l); l = ll > 1e-4 ? l / ll : vec2(0.0, 1.0);
-          vLight = mat2(c, -s, s, c) * l; vRot0 = vec2(c, s);
+          vUv = m * position.xy + 0.5;
+          float cell = mod(iVar, 4.0); vCell = vec2(mod(cell, 2.0), floor(cell / 2.0)) * 0.5;
+          vSoot = mod(floor(iVar / 4.0 + 0.01), 8.0) / 7.0;
+          // the sun, the sky's zenith and the flame, in the puff's own (rotated) frame: +z toward the camera
+          vSunS = vec3(m * uSunV.xy, uSunV.z); vUpS = vec3(m * uUpV.xy, uUpV.z);
+          vec3 fd = normalize(dF + vec3(0.0, 0.0, 1e-3)); vFdS = vec3(m * fd.xy, fd.z);
           vA = iData.y; vH = iData.z; vLit = iLit;
           vGround = (dot(mv.xyz, uUpV) - uGroundD) / max(iData.x * 0.28, 0.5);   // linear across the quad: clamp per pixel, not per corner
           gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: /* glsl */`
-        uniform sampler2D tPuff, tDet; uniform vec3 uSunCol, uAmb, uSunV, uGndCol;
-        varying vec2 vUv; varying vec2 vCell; varying vec2 vLight; varying float vA, vH, vGround, vSoot, vDet;
-        uniform vec3 uUpV, uFlameCol, uTint, uHeatCol;
-        varying vec2 vRot0, vOff; varying vec3 vLit; varying float vFl; varying vec3 vFd;
-        vec2 tx(vec2 uv) { return vCell + clamp(uv, 0.002, 0.998) * 0.5; }
-        float dens(vec2 uv) { return texture2D(tPuff, tx(uv)).r; }
+        uniform sampler2D tA, tB; uniform vec3 uSunCol, uAmb, uSunV, uGndCol, uFlameCol, uTint, uHeatCol;
+        varying vec2 vUv, vCell; varying float vA, vH, vGround, vSoot; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
+        vec3 lA, lB;
+        // the baked puff lit from direction L (toward the light): the six lightings, weighted by L's components squared
+        float six(vec3 L) { vec3 p = max(L, 0.0), n = max(-L, 0.0); p *= p; n *= n; return dot(lA, vec3(p.x, n.x, p.y)) + dot(lB, vec3(n.y, p.z, n.z)); }
         float hg(float g, float c) { float k = 1.0 + g * g - 2.0 * g * c; return (1.0 - g * g) / (k * sqrt(k)); }
         void main() {
-          vec4 s0 = texture2D(tPuff, tx(vUv));
-          float reach = smoothstep(0.02, 0.3, s0.g);
-          if (s0.r + 0.41 * reach < 0.12 || vA < 0.004) discard;   // outside anything the billows could add: skip the rest
-          // billows: two octaves of the cauliflower detail, in metres; they eat into the puff's thin outer part
-          // (the core stays solid), so every edge is a row of crisp lobes
-          vec2 du = (vUv - 0.5) * vDet + vOff;
-        #ifdef LITE
-          vec4 q1 = texture2D(tDet, du), q2 = q1;
-        #else
-          vec4 q1 = texture2D(tDet, du), q2 = texture2D(tDet, du * 2.37 + 0.31);
-        #endif
-          float hd = q1.r * 0.7 + q2.r * 0.3;
-          float edge = 1.0 - smoothstep(0.3, 0.85, s0.r);
-          float d = s0.r + (hd - 0.42) * 0.7 * edge * reach;   // only where the puff reaches
-          float a = smoothstep(0.12, 0.36, d) * vA * smoothstep(0.0, 1.0, clamp(vGround, 0.0, 1.0));
+          vec2 uv = vCell + clamp(vUv, 0.002, 0.998) * 0.5;
+          vec4 A = texture2D(tA, uv);
+          float a = A.a * vA * smoothstep(0.0, 1.0, clamp(vGround, 0.0, 1.0));
           if (a < 0.003) discard;
-          // normal: the puff's dome plus the billows' own bumps
-          float hx = s0.b - 0.502, hy = s0.a - 0.502;
-          vec2 gd = ((q1.gb - 0.5) * 0.7 + (q2.gb - 0.5) * 0.3 * 2.37) * vDet * 0.5;
-          vec2 g2 = mat2(vRot0.x, vRot0.y, -vRot0.y, vRot0.x) * (vec2(hx, hy) * 3.5 + gd);
-          vec3 n = normalize(vec3(-g2, max(s0.g, 0.15) + 0.25));
-          // small-scale self-shadow inside the puff, toward the sun as it falls across the screen (none when front-lit)
-          float ll = length(uSunV.xy);
-        #ifdef LITE
-          float occl = 1.6 * dens(vUv + vLight * 0.12 * ll);
-        #else
-          float occl = dens(vUv + vLight * 0.08 * ll) + 0.6 * dens(vUv + vLight * 0.18 * ll);
-        #endif
-          float self = clamp(1.15 - occl * 1.1, 0.15, 1.0);
-          self = mix(self, 1.0, smoothstep(0.2, 0.85, uSunV.z) * (0.55 + 0.45 * (1.0 - ll)));
-          // large-scale: the light that got here through the rest of the cloud (CPU-marched, per puff). Clouds are
-          // never as dark as one bounce of light says: a softer copy of the transmittance stands in for the light
-          // scattered many times inside (bright, blue-white shadows rather than grey ones)
+          vec4 B = texture2D(tB, uv);
+          lA = A.rgb * A.rgb; lB = B.rgb * B.rgb;
+          // large scale: the light that got here through the rest of the cloud (CPU-marched, per puff); a softer copy
+          // stands in for light scattered many times inside, so the shadows are blue-grey, not black
           float Ts = vLit.x, Tk = vLit.y;
-          float sunT = Ts * 0.7 + 0.3 * pow(Ts, 0.25) * 0.55;
-          float wrap = clamp(dot(n, uSunV) * 0.6 + 0.4, 0.0, 1.0);
-          // phase: mostly even, a forward lobe that makes thin edges blaze when the sun is behind the smoke
-          float cs = -uSunV.z;
-          float phase = 0.75 * hg(0.05, cs) + 0.25 * hg(0.65, cs) * (1.4 - d);
-          float up = dot(n, uUpV);
-          vec3 sun = uSunCol * sunT * wrap * self * min(phase, 6.0);
-          vec3 sky = uAmb * (0.25 + 0.75 * Tk) * (0.7 + 0.45 * up);
-          vec3 gnd = uGndCol * (0.5 - 0.5 * up) * (0.4 + 0.6 * Tk);
+          float sunT = Ts * 0.75 + 0.25 * pow(Ts, 0.3) * 0.5;
+          // forward scattering: thin rims blaze when the sun is behind the smoke
+          float cs = -uSunV.z, phase = 0.8 * hg(0.05, cs) + 0.2 * hg(0.6, cs);
+          vec3 sun = uSunCol * sunT * six(vSunS) * min(phase, 4.0) * 1.3;
+          float side = (lA.r + lA.g + lB.g + lB.b) * 0.25;
+          vec3 sky = uAmb * (0.2 + 0.8 * Tk) * (0.6 * six(vUpS) + 0.4 * side);
+          vec3 gnd = uGndCol * six(-vUpS) * (0.4 + 0.6 * Tk);
           // sooty smoke (burning propellant) is dark grey-brown, exhaust and steam white
           vec3 alb = uTint * mix(vec3(0.96, 0.95, 0.94), vec3(0.11, 0.1, 0.09), vSoot);
           // dust: where the cloud scours the ground it carries sand up into its lowest parts
           alb *= mix(vec3(0.86, 0.78, 0.68), vec3(1.0), smoothstep(0.6, 3.0, vGround));
-          // the creases between billows see less of the sky and catch less sun
-          float crease = 0.62 + 0.38 * smoothstep(0.15, 0.75, hd);
-          vec3 col = 0.9 / 3.14159 * (sun + sky + gnd) * alb * crease;
+          vec3 col = 0.95 / 3.14159 * (sun + sky + gnd) * alb;
           // glowing exhaust: yellow-white where it is hottest, deep orange as it cools
-          col += mix(uHeatCol, vec3(1.0, 0.72, 0.35), vH) * vH * vH * (0.6 + 0.4 * d) * 6.0;
-          // lit by the flame: on the side that faces it, and through the thin parts of the steam (light scattered
-          // inside it): golden close in, deep orange farther out
-          float fl = vFl * (0.05 + 0.95 * vLit.z * vLit.z) * ((0.25 + 0.75 * clamp(dot(n, vFd) * 0.7 + 0.3, 0.0, 1.0)) * (0.55 + 0.45 * d) + 0.35 * (1.0 - d));
-          // (whatever the engine, what lights a launch cloud is hot exhaust and the fire under the pad: always warm)
+          col += mix(uHeatCol, vec3(1.0, 0.72, 0.35), vH) * vH * vH * 3.0;
+          // lit by the flame, most on the side and the parts of the cloud it can reach, but glowing through the rest
+          // too (light scattered inside the steam): golden close in, deep orange farther out
           vec3 warm = mix(uFlameCol, vec3(1.0, 0.56, 0.22), 0.6);
-          col += mix(warm * vec3(1.0, 0.62, 0.32), warm, smoothstep(0.5, 6.0, vFl)) * fl * alb;
+          col += mix(vec3(1.0, 0.42, 0.1), warm, smoothstep(1.0, 9.0, vFl)) * vFl * (0.15 + 0.85 * vLit.z) * (0.3 + six(vFdS)) * 2.6 * alb;
           gl_FragColor = vec4(col, min(1.0, a));
         }`,
     });
@@ -218,20 +145,20 @@ export class Smoke {
     this.mesh.frustumCulled = false; this.mesh.renderOrder = 5;
     this.n = 0;
     this.p = new Float64Array(MAX * 3); this.v = new Float64Array(MAX * 3); this.e = new Float64Array(MAX * 3);
-    this.f = new Float32Array(MAX * 10); // age, life, size0, size1, heat0, seed, opacity, spin, hit the ground, carried by the jet
+    this.f = new Float32Array(MAX * 10); // age, life, size0, size1, heat0, seed, opacity, turn rate, hit the ground, carried by the jet
     this.depth = new Float32Array(MAX); this.soot = new Uint8Array(MAX);
+    // launch-cloud puffs (pad()): how hard the air brakes them (1/s) and how strongly they rise (m/s²); 0 = other smoke
+    this.q = new Float32Array(MAX * 2);
+    this.th = 0; this.tt = 0;   // the planet's turn and the clock, for the turbulence that lives in the pad's air
+    this.towers = [];           // where the launch cloud climbs: [x, y, z (ground frame, see toGround), radius, strength] each
     // volumetric light: every puff's transmittance toward the sun and the open sky, through all the other smoke
     this.lit = new Float32Array(MAX * 3); this.sz = new Float32Array(MAX); this.al = new Float32Array(MAX);
-    this.vw = new Float32Array(MAX);   // how much of each puff the volume (smokevol.js) draws instead of its sprite
-    this.vol = null;                   // set by the owner when the volumetric cloud is on
     this.fine = new DensityGrid(6); this.coarse = new DensityGrid(24, 15); this.litPhase = 0;
     this.sunW = new THREE.Vector3(0, 1, 0);   // set by the owner: the sun's direction in the planet frame
     this.flameW = new THREE.Vector3(); this.flameOn = false;   // and where the engines' light comes from
     this.trails = new Map();
   }
-  clear() { this.n = 0; this.geo.instanceCount = 0; this.trails.clear(); }
-  // low effects: one octave of billows and one self-shadow sample (about two fewer texture reads a pixel)
-  setLite(on) { if (!!this.mat.defines.LITE === on) return; if (on) this.mat.defines.LITE = 1; else delete this.mat.defines.LITE; this.mat.needsUpdate = true; }
+  clear() { this.n = 0; this.geo.instanceCount = 0; this.trails.clear(); this.towers = []; }
   emit(pos, vel, size0, size1, life, heat, emitter, opacity = 1, soot = 0) {
     let i = this.n;
     const MAX = this.max;
@@ -247,7 +174,20 @@ export class Smoke {
     f[j] = 0; f[j + 1] = life; f[j + 2] = size0; f[j + 3] = size1; f[j + 4] = heat; f[j + 5] = Math.random();
     f[j + 6] = opacity; f[j + 7] = (Math.random() - 0.5) * 0.5; f[j + 8] = 0; f[j + 9] = 0; this.soot[i] = Math.round(Math.min(1, soot) * 7);
     this.lit[i * 3] = -1;   // not lit yet: light it in the next update, whatever its turn
+    this.q[i * 2] = 0; this.q[i * 2 + 1] = 0;
     return i;
+  }
+  // make puff i part of the launch cloud: it rides the turbulence, brakes at `drag` (1/s), rises at up to `lift` (m/s²)
+  pad(i, drag, lift) { this.q[i * 2] = drag; this.q[i * 2 + 1] = lift; this.f[i * 10 + 8] = 1; }
+  // a point in the planet frame → the frame fixed to the ground that the pad's air and towers live in
+  toGround(v) { const c = Math.cos(this.th), s = Math.sin(this.th); return [c * v.x - s * v.z, v.y, s * v.x + c * v.z]; }
+  // a puff swells fast as it mixes with the air, then slowly. Launch-cloud puffs keep swelling as they climb and
+  // spread (entraining air): their lobes are carved in metres by the shared billow field, so a bigger puff only
+  // fills out the cloud, it never turns into a smooth ball
+  sizeOf(i, age) {
+    const f = this.f, j = i * 10;
+    return this.q[i * 2] > 0 ? f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-age * 0.45)) + age * 0.9
+      : f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-age * 1.6)) + age * 0.35;
   }
   // Lay puffs evenly along the path the nozzle took through the air since last frame.
   // o: { size0, size1, life, opacity, push (m/s out of the nozzle), spacing (m), minRate (/s) }
@@ -342,9 +282,11 @@ export class Smoke {
   }
 
   update(dt, planet, origin, camera, groundUp, groundDist) {
-    const R = planet.R, om = planet.omega, p = this.p, v = this.v, f = this.f, e = this.e;
+    const R = planet.R, om = planet.omega, p = this.p, v = this.v, f = this.f, e = this.e, q = this.q;
     let n = this.n;
     const damp = 1 - Math.exp(-dt * 0.9);
+    this.th += om * dt; this.tt += dt;
+    const ct = Math.cos(this.th), st = Math.sin(this.th), tt0 = this.tt, NM = TURB.length;
     for (let i = 0; i < n; i++) {
       const k = i * 3, j = i * 10;
       f[j] += dt;
@@ -353,6 +295,7 @@ export class Smoke {
         for (let c = 0; c < 3; c++) { p[k + c] = p[m + c]; v[k + c] = v[m + c]; e[k + c] = e[m + c]; }
         for (let c = 0; c < 10; c++) f[j + c] = f[mj + c];
         this.soot[i] = this.soot[n]; for (let c = 0; c < 3; c++) this.lit[i * 3 + c] = this.lit[n * 3 + c];
+        q[i * 2] = q[n * 2]; q[i * 2 + 1] = q[n * 2 + 1];
         i--; continue;
       }
       const x = p[k], y = p[k + 1], z = p[k + 2];
@@ -363,18 +306,50 @@ export class Smoke {
       const nx = uy * ez, ny = uz * ex - ux * ez, nz = -uy * ex;                                                   // north = up × east
       const ws = 3 + 9 * (1 - Math.exp(-Math.max(0, alt) / 2500)), wa = 0.6 + alt / 4000;
       const se = f[j + 5] * 40, tt = f[j];
-      const tb = 1.6 * Math.min(1, tt * 0.5);
+      const kd = q[i * 2];
+      const tb = kd > 0 ? 0 : 1.6 * Math.min(1, tt * 0.5);
       const we = ws * Math.cos(wa) + tb * Math.sin(tt * 0.9 + se), wn = ws * Math.sin(wa) + tb * Math.sin(tt * 0.7 + se * 1.7), wu = tb * 0.5 * Math.sin(tt * 1.1 + se * 2.3);
       const ax = om * z + ex * we + nx * wn + ux * wu, ay = ny * wn + uy * wu, az = -om * x + ez * we + nz * wn + uz * wu;
-      const dk = f[j + 9] > 0 ? 1 - Math.exp(-dt * (0.9 + 6 * Math.exp(-f[j] * 3))) : damp;   // jet-carried exhaust brakes hard at first
-      v[k] += (ax - v[k]) * dk; v[k + 1] += (ay - v[k + 1]) * dk; v[k + 2] += (az - v[k + 2]) * dk;
-      // buoyancy: hot steam off the pad rises hard, and unevenly: a few puffs carry a lot more heat and build the
-      // towering columns of a real launch cloud, the rest roll out low along the ground
-      const hot = f[j + 8] > 0 ? 2.5 + 11 * Math.pow((f[j + 5] * 7.31) % 1, 3) : 0.8;
-      const lift = hot * dt * Math.exp(-f[j] * (f[j + 8] > 0 ? 0.1 : 0.08));
-      v[k] += ux * lift; v[k + 1] += uy * lift; v[k + 2] += uz * lift;
+      let tx = 0, ty = 0, tz = 0;
+      if (kd > 0) {
+        // launch cloud: the jet off the pad brakes in the still air (its own rate), rises where the steam is hottest,
+        // and is churned by eddies in proportion to how fast it is still going (a racing jet tears itself into
+        // lobes, the settled cloud just slowly boils). A rising tower is a plume, not a jet: the air brakes its
+        // climb far less than its spread
+        const dk = 1 - Math.exp(-dt * kd), dv = 1 - Math.exp(-dt * kd * 0.3);
+        let wx = ax - v[k], wy = ay - v[k + 1], wz = az - v[k + 2];
+        const wr = wx * ux + wy * uy + wz * uz, wk = wr * (dv - dk);
+        v[k] += wx * dk + ux * wk; v[k + 1] += wy * dk + uy * wk; v[k + 2] += wz * dk + uz * wk;
+        const X = ct * x - st * z, Z = st * x + ct * z;   // in the pad's own (turning) frame
+        for (let c = 0; c < NM; c += 8) {
+          const w = Math.cos(TURB[c] * X + TURB[c + 1] * y + TURB[c + 2] * Z - TURB[c + 6] * tt0 + TURB[c + 7]);
+          tx += TURB[c + 3] * w; ty += TURB[c + 4] * w; tz += TURB[c + 5] * w;
+        }
+        const rvx = v[k] - ax, rvy = v[k + 1] - ay, rvz = v[k + 2] - az, rv = Math.sqrt(rvx * rvx + rvy * rvy + rvz * rvz);
+        const amp = 1.5 + 0.15 * rv;
+        const Tx = (ct * tx + st * tz) * amp, Tz = (-st * tx + ct * tz) * amp; tx = Tx; ty *= amp; tz = Tz;
+        // heat: towers stand where the jets stall (tower sites from the owner, fixed to the ground); elsewhere the
+        // steam only creeps up. The lift builds as the jet stalls and dies away as the steam cools
+        let hot = 0.3;
+        const T = this.towers, Ux = ct * ux - st * uz, Uz = st * ux + ct * uz;
+        for (let c = 0; c < T.length; c += 5) {
+          let dx = X - T[c], dy = y - T[c + 1], dz = Z - T[c + 2];
+          const dh = dx * Ux + dy * uy + dz * Uz;   // across the ground only
+          dx -= Ux * dh; dy -= uy * dh; dz -= Uz * dh;
+          hot += T[c + 4] * Math.exp(-(dx * dx + dy * dy + dz * dz) / (T[c + 3] * T[c + 3]));
+        }
+        const lift = q[i * 2 + 1] * hot * dt * Math.min(1, tt * 0.6) * Math.exp(-tt * 0.05) / (1 + rv * 0.04);
+        v[k] += ux * lift; v[k + 1] += uy * lift; v[k + 2] += uz * lift;
+      } else {
+        const dk = f[j + 9] > 0 ? 1 - Math.exp(-dt * (0.9 + 6 * Math.exp(-f[j] * 3))) : damp;   // jet-carried exhaust brakes hard at first
+        v[k] += (ax - v[k]) * dk; v[k + 1] += (ay - v[k + 1]) * dk; v[k + 2] += (az - v[k + 2]) * dk;
+        // buoyancy: warm exhaust drifts up
+        const hot = f[j + 8] > 0 ? 2.5 : 0.8;
+        const lift = hot * dt * Math.exp(-f[j] * (f[j + 8] > 0 ? 0.1 : 0.08));
+        v[k] += ux * lift; v[k + 1] += uy * lift; v[k + 2] += uz * lift;
+      }
       // reaching the ground: turn downward motion into a spread outward from where it was emitted
-      const size = f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-f[j] * 1.6)) + f[j] * 0.35;
+      const size = this.sizeOf(i, tt);
       if (r - R < size * 0.3) {
         const rx = v[k] - ax, ry = v[k + 1] - ay, rz = v[k + 2] - az, vr = rx * ux + ry * uy + rz * uz;
         if (vr < 0) {
@@ -390,17 +365,15 @@ export class Smoke {
             const rx = ca * t1x + sa * t2x, ry = sa * t2y, rz = ca * t1z + sa * t2z, Ln = L || 1;
             hx = rx * (1 - w) + (hx / Ln) * w; hy = ry * (1 - w) + (hy / Ln) * w; hz = rz * (1 - w) + (hz / Ln) * w;
           }
-          let hn = Math.hypot(hx, hy, hz) || 1, s = -vr * 0.8;
+          const hn = Math.hypot(hx, hy, hz) || 1, s = -vr * 0.8;
           if (f[j + 8] === 0) f[j + 4] = Math.max(f[j + 4], 1);   // fresh exhaust slamming into the pad: the fireball at the base
           f[j + 8] = 1;                                   // steam off the pad: it boils upward from now on
-          const D = this.deflect;
-          if (D && Math.hypot(x - D.pos.x, y - D.pos.y, z - D.pos.z) < D.R) {     // the flame channel sends it one way
-            hx = hx / hn * 0.65 + D.dir.x; hy = hy / hn * 0.65 + D.dir.y; hz = hz / hn * 0.65 + D.dir.z; hn = Math.hypot(hx, hy, hz) || 1; s *= 1.3;
-          }
           v[k] += -ux * vr + (hx / hn) * s; v[k + 1] += -uy * vr + (hy / hn) * s; v[k + 2] += -uz * vr + (hz / hn) * s;
         }
+        // eddies cannot push smoke into the ground
+        const tr = tx * ux + ty * uy + tz * uz; if (tr < 0) { tx -= ux * tr; ty -= uy * tr; tz -= uz * tr; }
       }
-      p[k] += v[k] * dt; p[k + 1] += v[k + 1] * dt; p[k + 2] += v[k + 2] * dt;
+      p[k] += (v[k] + tx) * dt; p[k + 1] += (v[k + 1] + ty) * dt; p[k + 2] += (v[k + 2] + tz) * dt;
       e[k] += om * e[k + 2] * dt; e[k + 2] += -om * e[k] * dt;
     }
     this.n = n;
@@ -409,16 +382,14 @@ export class Smoke {
     for (let i = 0; i < n; i++) {
       const j = i * 10, age = f[j], t = age / f[j + 1];
       const fi = Math.min(1, age / (f[j + 9] > 0 ? 0.35 : 0.18)), fo = 1 - Math.max(0, (t - 0.45) / 0.55);
-      sz[i] = f[j + 2] + (f[j + 3] - f[j + 2]) * (1 - Math.exp(-age * 1.6)) + age * 0.35;
+      sz[i] = this.sizeOf(i, age);
       al[i] = fi * fi * (3 - 2 * fi) * fo * fo * 0.7 * f[j + 6];
     }
     this.light(n, this.p, sz, al, this.lit);
-    if (this.vol && this.vol.ready) this.vol.collect(this, n); else { this.vw.fill(0, 0, n); if (this.vol) this.vol.n = 0; }
     // draw back to front so overlapping puffs never swap
     const cx = camera.position.x + origin.x, cy = camera.position.y + origin.y, cz = camera.position.z + origin.z, depth = this.depth;
-    // (puffs the volume draws in full are left out: an invisible sprite still costs its whole quad in fill)
     const ord = [];
-    for (let i = 0; i < n; i++) { if (this.vw[i] > 0.995) continue; const k = i * 3, dx = p[k] - cx, dy = p[k + 1] - cy, dz = p[k + 2] - cz; depth[i] = dx * dx + dy * dy + dz * dz; ord.push(i); }
+    for (let i = 0; i < n; i++) { const k = i * 3, dx = p[k] - cx, dy = p[k + 1] - cy, dz = p[k + 2] - cz; depth[i] = dx * dx + dy * dy + dz * dz; ord.push(i); }
     ord.sort((a, b) => depth[b] - depth[a]);
     const nd = ord.length;
     const P = this.aPos.array, D = this.aData.array, Vv = this.aVar.array, L = this.aLit.array;
@@ -426,7 +397,7 @@ export class Smoke {
       const i = ord[s], k = i * 3, j = i * 10, age = f[j];
       P[s * 3] = p[k] - origin.x; P[s * 3 + 1] = p[k + 1] - origin.y; P[s * 3 + 2] = p[k + 2] - origin.z;
       D[s * 4] = sz[i];
-      D[s * 4 + 1] = al[i] * (1 - this.vw[i]);
+      D[s * 4 + 1] = al[i];
       L[s * 3] = this.lit[i * 3]; L[s * 3 + 1] = this.lit[i * 3 + 1]; L[s * 3 + 2] = this.lit[i * 3 + 2];
       D[s * 4 + 2] = f[j + 4] * Math.exp(-age * (f[j + 8] > 0 ? 1.4 : 4));
       D[s * 4 + 3] = f[j + 5] * 6.2832 + age * f[j + 7];
