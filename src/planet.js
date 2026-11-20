@@ -276,8 +276,10 @@ vec3 shellVol(vec3 loc, float cov, float foot) {
     if (i >= nS) break;
     float sd = nS == 2 ? (i == 0 ? 600.0 : 1800.0) : i == 0 ? 220.0 : i == 1 ? 550.0 : i == 2 ? 1200.0 : 2600.0;
     gFoot = max(gFoot, sd * 0.25);
-    vec2 q = sheetDens(loc + sh * sd, cov);
-    float hs = q.x > 0.05 ? Th * (0.1 + 0.9 * q.y) : 0.0;
+    // (the neighbours only cast shadows from hundreds of metres off: their large shapes are enough, and keeping
+    // this to two lookups keeps the shader small enough for Direct3D's compiler, which inlines every call)
+    float cq = cov * 1.15 + cloudShapeLo(loc + sh * sd), dq = smoothstep(0.34, 0.7, cq);
+    float hs = dq > 0.05 ? Th * (0.1 + 0.9 * dq * smoothstep(0.3, 1.05, cq)) : 0.0;
     occ += smoothstep(-0.08 * Th, 0.12 * Th, hs - (h0 + sd * tanE)) * (nS == 2 ? 0.6 : i == 0 ? 0.45 : 0.3);
   }
   float lit = 1.0 - 0.88 * min(occ, 1.0);
@@ -529,7 +531,7 @@ void main() {
     if (nearG > 0.0) {
       vec3 pG0 = cF + dF * tG, pS0 = pG0 + uSunF * ((uRc - length(pG0)) / max(mu, 0.12));
       gFoot = 400.0;
-      float sc = smoothstep(0.0, 0.6, sheetDens(pS0 - cF, cloudCov(pS0)).x);   // the same clouds the sheet draws
+      float sc = smoothstep(0.42, 0.62, cloudCov(pS0) * 1.15 + cloudShapeLo(pS0 - cF));   // the sheet's clouds, large shapes
       cs = mix(cs, 1.0 - 0.7 * sc, nearG);
     }
     // near the camera the shadows come from the volumetric clouds themselves (where the sun ray from this
