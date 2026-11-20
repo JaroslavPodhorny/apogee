@@ -458,6 +458,11 @@ void main() {
   vec2 sP = vec2(dot(sOff, sE0), dot(sOff, sN0));
   float siteD = length(sP) < 2e5 ? length(sP) : acos(clamp(dot(nF, uSite), -1.0, 1.0)) * uR;
   vec3 locA = uCamRel + dF * min(tG, 2e6), dlx = dFdx(locA), dly = dFdy(locA);   // for mip selection of ground detail
+  // How far the ground moves from this pixel to the next, in the site's plane. The ground detail below works out its
+  // anti-aliasing widths from these instead of calling fwidth() inside its branches: Direct3D's compiler cannot keep
+  // a branch that takes a screen derivative, so it flattened them all and ran the whole ground synthesis for every
+  // pixel, sky included (enough to make a Windows driver reset the GPU on the title screen).
+  vec2 pdx = vec2(dot(dlx, sE0), dot(dlx, sN0)), pdy = vec2(dot(dly, sE0), dot(dly, sN0));
   vec3 relG = dF * min(tG, 2e6);
   gRel = vec2(dot(relG, uGE), dot(relG, uGN));
   vec2 gdx = dFdx(gRel), gdy = dFdy(gRel);
@@ -807,11 +812,12 @@ void main() {
           }
           // machinery passes: alternate swaths ~9 m wide a shade lighter and darker, the classic look of fields from the air
           {
-            float sw = across / mix(7.0, 12.0, h2), sa = fwidth(sw) + 1e-4;
+            vec2 pp = vec2(-dir.y, dir.x);
+            float sw = across / mix(7.0, 12.0, h2), sa = (abs(dot(pdx, pp)) + abs(dot(pdy, pp))) / mix(7.0, 12.0, h2) + 1e-4;
             float pass = smoothstep(0.5 - sa, 0.5 + sa, abs(fract(sw) - 0.5) * 2.0);
             crop *= mix(1.0, 0.92 + 0.16 * pass, smoothstep(5.0, 1.5, footL) * (1.0 - step(0.6, h4)) * step(0.25, h2));
           }
-          float tw = fwidth(sdir);
+          float tw = abs(dot(pdx, dir)) + abs(dot(pdy, dir)), twA = abs(dot(pdx, vec2(-dir.y, dir.x))) + abs(dot(pdy, vec2(-dir.y, dir.x)));
           float tram = 1.0 - smoothstep(0.35 - tw, 0.35 + tw, abs(fract(sdir / 21.0) - 0.5) * 21.0);
           float rows = 0.5 + 0.5 * sin(across * 7.85);
           float plough = step(0.45, h1) * step(h1, 0.57);
@@ -824,14 +830,15 @@ void main() {
             furrowN += acrossV * cos(across * 7.85) * (plough > 0.5 ? 0.5 : 0.16) * rk;
           }
           // borders: hedgerows (with trees along them) or pale grass margins; lanes between farms
-          float bw = fwidth(bd) + 0.3;
+          float bw = max(tw, twA) + 0.3;   // (the edge runs along the rows or across them)
           bool hedge = h3 < 0.3;                                  // hedges on some borders; most fields just meet
           float hedgeW = hedge ? 3.0 : 1.2;
           float border = 1.0 - smoothstep(hedgeW - bw, hedgeW + bw, bd);
           vec3 bc = hedge ? vec3(0.016, 0.032, 0.011) : vec3(0.07, 0.085, 0.034);
           // a hedge thinner than a pixel is mostly field colour: seen from high up, fields meet softly
           crop = mix(crop, bc, border * (hedge ? 1.0 : 0.5) * mix(1.0, 0.35, smoothstep(1.5, 6.0, footA)));
-          float lane = 1.0 - smoothstep(2.5 - fwidth(vp.x * 1500.0), 2.5 + fwidth(vp.x * 1500.0), vp.x * 1500.0);
+          float fpl = (length(pdx) + length(pdy)) * 0.85;
+          float lane = 1.0 - smoothstep(2.5 - fpl, 2.5 + fpl, vp.x * 1500.0);
           crop = mix(crop, vec3(0.12, 0.1, 0.075), lane * smoothstep(12.0, 3.0, footA));
           // hedgerow trees: crowns from the cellular detail texture, only along hedges, each with its shadow
           float kT = smoothstep(6.0, 1.5, footA);
@@ -848,7 +855,7 @@ void main() {
       }
       // copses: small woods scattered in the meadows and between fields (crown texture, lit from the sun)
       float cop = copseField(p);
-      float ca = fwidth(cop) + 1e-4;
+      float ca = abs(copseField(p + pdx) - cop) + abs(copseField(p + pdy) - cop) + 1e-4;
       float copK = smoothstep(0.63 - ca, 0.63 + ca, cop) * smoothstep(420.0, 700.0, siteD) * (1.0 - smoothstep(0.1, 0.18, slope));
       if (copK > 0.0) {
         vec3 wood = vec3(0.018, 0.034, 0.012);
@@ -870,7 +877,7 @@ void main() {
       float lk = lakeField(p) + (vnoise(vec3(p / 500.0, 2.0), 0) - 0.5) * 0.03 + (vnoise(vec3(p / 90.0, 4.0), 0) - 0.5) * 0.012 * smoothstep(20.0, 4.0, footA);
       float rW = reliefW(nF, siteD);
       float thr = 0.64 + smoothstep(0.015, 0.06, slope) * 0.6 + (1.0 - smoothstep(600.0, 1100.0, siteD)) * 0.6 + smoothstep(0.0, 0.3, rW);
-      float la = fwidth(lk) + 1e-4;
+      float lf0 = lakeField(p), la = abs(lakeField(p + pdx) - lf0) + abs(lakeField(p + pdy) - lf0) + 1e-4;
       lakeK = smoothstep(thr - la, thr + la, lk) * cty;
       lakeDep = max(lakeDep, (lk - thr) * 900.0);           // a depth in metres, roughly, for the colour: shelves off quickly
       float reed = smoothstep(thr - 0.04, thr - 0.012, lk) * (1.0 - lakeK);
@@ -880,7 +887,10 @@ void main() {
       if (rW > 0.15) {
         float rs = reliefShape(nF);
         float d = (LAKE_LV - rs) * RELIEF_K * uTA * rW;                  // metres below the water line (negative: above it)
-        float aw = fwidth(d) + 0.02;
+        // (stepping at least 2 m: a smaller offset would vanish in the 600 km vector's rounding)
+        float lx = length(dlx), ly = length(dly), sx = max(lx, 2.0), sy = max(ly, 2.0);
+        float rsx = reliefShape(normalize(nF * uR + dlx * (sx / max(lx, 1e-6)))), rsy = reliefShape(normalize(nF * uR + dly * (sy / max(ly, 1e-6))));
+        float aw = (abs(rsx - rs) * lx / sx + abs(rsy - rs) * ly / sy) * RELIEF_K * uTA * rW + 0.02;
         float lk2 = smoothstep(-aw, aw, d) * smoothstep(0.15, 0.35, rW) * smoothstep(18.0, 40.0, roadDist(p));
         lakeK = max(lakeK, lk2 * cty); lakeDep = max(d, 0.0);
         // the shore: wet mud and sand a metre or so up, reed beds in patches along it
@@ -1011,7 +1021,9 @@ void main() {
       float region = smoothstep(0.52, 0.6, fbm(nF * (uR / 60000.0) + 9.0, 2));
       if (region > 0.0) {
         float rv = fbmR(ROT * nF * (uR / 9000.0) + 3.3, 3);
-        float rw = abs(rv - 0.5), fw = max(fwidth(rv), 1e-6);
+        float lx = length(dlx), ly = length(dly), sx = max(lx, 30.0), sy = max(ly, 30.0);
+        float rvx = fbmR(ROT * normalize(nF * uR + dlx * (sx / max(lx, 1e-6))) * (uR / 9000.0) + 3.3, 3), rvy = fbmR(ROT * normalize(nF * uR + dly * (sy / max(ly, 1e-6))) * (uR / 9000.0) + 3.3, 3);
+        float rw = abs(rv - 0.5), fw = max(abs(rvx - rv) * lx / sx + abs(rvy - rv) * ly / sy, 1e-6);
         river = clamp((0.0045 - rw) / fw + 0.5, 0.0, 1.0) * region * awaySite * landW * smoothstep(0.3, 0.1, length(rl.xy)) * smoothstep(0.06, 0.02, slope);
       }
     }
