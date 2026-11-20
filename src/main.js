@@ -17,19 +17,26 @@ import { applyTone } from './style.js';
 import { universes, currentUniverse, setCurrentUniverse, createUniverse, deleteUniverse, worldSummary } from './universe.js';
 
 const $ = (id) => document.getElementById(id);
+// loading: name each step on the loading screen and let the browser paint it before the step runs
+// (a timer as well as a frame: a background tab gets no frames, and loading must not stall there)
+const step = (label, k) => { window.apogeeStep?.(label, k); return new Promise((r) => { requestAnimationFrame(() => setTimeout(r, 0)); setTimeout(r, 100); }); };
 const canvas = $('c');
+await step('Drawing the parts', 0.15);
 const thumbs = renderThumbnails();
+await step('Starting the graphics', 0.3);
 let renderer;
 try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); } catch (err) {
   window.apogeeFail?.('Your browser could not start WebGL 2, which Apogee needs.', ' Close every window of the browser and open it again: after a graphics crash Chrome turns WebGL off for a site until it restarts. Check that hardware acceleration is on in the browser settings, and that the graphics driver is up to date.');
   throw err;
 }
 // the GPU or its driver stopped the game (a crash or a reset): say so instead of freezing on a blank picture
-canvas.addEventListener('webglcontextlost', () => window.apogeeFail?.('The graphics driver stopped the game.', ' Reload the page. If it happens again, choose a lower quality in Graphics, and make sure the graphics driver is up to date.'));
+canvas.addEventListener('webglcontextlost', () => window.apogeeFail?.(`The graphics driver stopped the game (during: ${window.apogeeAt || 'loading'}).`, ' Reload the page. If it happens again, choose a lower quality in Graphics, and make sure the graphics driver is up to date.'));
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setClearColor(0x000000, 1);
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+await step('Loading the planet', 0.4);
 const tex = await loadEarth(renderer);
+await step('Building the hangar and the launch site', 0.6);
 
 let mode = 'title';
 const flight = new Flight(renderer, canvas, thumbs, tex, () => setMode('build'));
@@ -101,6 +108,7 @@ for (const b of document.querySelectorAll('.gfx-btn')) b.onclick = () => toggleG
 for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, () => sfx.init(), true);
 
 function setMode(m) {
+  window.apogeeAt = { title: 'the title screen', build: 'the hangar', flight: 'flight' }[m] || m;
   photo.close();
   mode = m;
   $('title-ui').hidden = m !== 'title';
@@ -111,8 +119,15 @@ function setMode(m) {
 }
 function resize() { renderer.setSize(window.innerWidth, window.innerHeight, false); }
 window.addEventListener('resize', resize); resize();
+// The sky shader is the biggest program by far. Compile it in the background (KHR_parallel_shader_compile) before
+// the first frame instead of blocking on it there: on Windows the compiler can take many seconds, and a GPU process
+// blocked that long is killed by the browser's watchdog (the WebGL context is lost). Bound to the HDR target the
+// title draws into, so the program matches the one the frames will use (the flight's sky shares it).
+await step('Preparing the sky', 0.8);
+{ const prev = renderer.getRenderTarget(); renderer.setRenderTarget(titleComp.renderTarget1); const job = renderer.compileAsync(menuScene, menuCam); renderer.setRenderTarget(prev); await job.catch(() => {}); }
+await step('Ready', 1);
 setMode('title');
-$('boot').remove();
+$('boot').classList.add('done'); setTimeout(() => $('boot')?.remove(), 600);
 window.apogee = { builder, flight, setMode, menuSky, tex, get mode() { return mode; }, autopilot: (warp) => (window.apogee.ap = startAutopilot(flight, warp)) };
 
 document.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('button, .item'); if (b) { if (b.blur && !b.closest('dialog')) b.blur(); if (b.id !== 'f-stage-btn') sfx.play('click'); } });

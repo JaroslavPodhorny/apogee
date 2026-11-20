@@ -173,13 +173,19 @@
     <div class="photo-notes"><span class="photo-mouse-hint">Drag to orbit · Shift-drag to reframe · Scroll to move closer</span><span class="photo-touch-hint">Drag to orbit · Use two fingers to reframe and zoom</span><span id="photo-status" role="status"></span></div>
   </footer>
 </dialog>
-<div id="boot"><span>Apogee</span><p id="boot-msg" hidden></p></div>
+<div id="boot"><span>Apogee</span><div id="boot-load"><div id="boot-bar"><i></i></div><small id="boot-step">Loading the game</small></div><p id="boot-msg" hidden></p></div>
 <script>
+  // loading progress: what is being prepared now, and how far along (0–1)
+  window.apogeeStep = (label, k) => {
+    const s = document.getElementById('boot-step'), b = document.querySelector('#boot-bar i');
+    window.apogeeAt = label; if (s) s.textContent = label; if (b) b.style.width = Math.round(k * 100) + '%';
+  };
   // never leave a silent loading screen: say what went wrong (the page cannot load, WebGL is off, the GPU stopped)
   window.apogeeFail = (title, detail) => {
     let b = document.getElementById('boot');
     if (!b) { b = document.createElement('div'); b.id = 'boot'; b.innerHTML = '<span>Apogee</span><p id="boot-msg"></p>'; document.body.appendChild(b); }
     const m = document.getElementById('boot-msg'); m.hidden = false;
+    const ld = document.getElementById('boot-load'); if (ld) ld.hidden = true;
     m.innerHTML = '<b></b><br>'; m.firstChild.textContent = title; m.appendChild(document.createTextNode(detail || ''));
   };
   const onErr = (e) => { const m = document.getElementById('boot-msg'); if (document.getElementById('boot') && (!m || m.hidden)) window.apogeeFail('Apogee could not start.', ' ' + ((e.reason || e.error || e).message || e.message || e)); };
