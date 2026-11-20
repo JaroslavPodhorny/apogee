@@ -1147,6 +1147,7 @@ export class Flight {
     // stars: exposed for a sunlit rocket only the brightest show; with the eye opened up at night, all of them
     this.sky.material.uniforms.uStarK.value = THREE.MathUtils.lerp(0.3, 1.6, THREE.MathUtils.smoothstep(this.exposure, 1.1, 2.8));
     const sm = this.smoke.mat.uniforms;
+    sm.uStyle.value = gfx.smokeStyle || 0; if (this.booms.cloud) this.booms.cloud.mat.uniforms.uStyle.value = gfx.smokeStyle || 0;
     sm.uSunCol.value.set(T.r, T.g, T.b).multiplyScalar(SUN_E);
     const day = THREE.MathUtils.smoothstep(up.dot(this.sunDir), -0.15, 0.3) * Math.max(0.05, 1 - vAlt / pl.atmTop);
     sm.uAmb.value.set(0.06, 0.09, 0.14).multiplyScalar(SUN_E * day + 0.01);

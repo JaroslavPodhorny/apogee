@@ -13,7 +13,7 @@ export const PRESETS = {
   high: { res: 'auto', resMax: 1.5, sky: 0.6, shadows: 2048, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
   ultra: { res: 1, resMax: 2, sky: 0.8, shadows: 4096, clouds: true, bushes: true, bloom: true, msaa: 4, fx: 'high' },
 };
-const DEFAULT = { preset: 'high', ...PRESETS.high, fps: false };
+const DEFAULT = { preset: 'high', ...PRESETS.high, fps: false, smokeStyle: 0 };   // (smoke style is a look, not a quality: no preset sets it)
 
 function load() {
   let s = null; try { s = JSON.parse(localStorage.getItem(KEY)); } catch { /* ignore */ }
@@ -43,6 +43,7 @@ const ROWS = [
   ['clouds', 'Volumetric clouds', [[false, 'Off'], [true, 'On']], 'Real 3D cumulus you can fly through'],
   ['bushes', '3D vegetation', [[false, 'Off'], [true, 'On']], 'Bushes near the camera'],
   ['fx', 'Effects', [['low', 'Low'], ['high', 'High']], 'Sparks, embers and glints: how many particles'],
+  ['smokeStyle', 'Smoke style', [[0, 'Realistic'], [1, 'Toon'], [2, 'Soft toon']], 'Toon: flat tones and crisp outlines, sharp at any resolution'],
   ['bloom', 'Bloom', [[false, 'Off'], [true, 'On']], 'Glow round the sun, flames and lights'],
   ['fps', 'Frame rate', [[false, 'Hide'], [true, 'Show']]],
 ];

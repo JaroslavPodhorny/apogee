@@ -79,7 +79,7 @@ export class Smoke {
     this.mat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false,
       uniforms: {
-        tA: { value: PUFFS().A }, tB: { value: PUFFS().B }, tDet: { value: PUFFS().det }, uGndCol: { value: new THREE.Vector3(0.05, 0.045, 0.035) }, uSunCol: { value: new THREE.Vector3(1, 1, 1) }, uAmb: { value: new THREE.Vector3(0.2, 0.2, 0.25) },
+        tA: { value: PUFFS().A }, tB: { value: PUFFS().B }, tDet: { value: PUFFS().det }, uStyle: { value: 0 }, uGndCol: { value: new THREE.Vector3(0.05, 0.045, 0.035) }, uSunCol: { value: new THREE.Vector3(1, 1, 1) }, uAmb: { value: new THREE.Vector3(0.2, 0.2, 0.25) },
         uSunV: { value: new THREE.Vector3(0, 1, 0) }, uUpV: { value: new THREE.Vector3(0, 1, 0) }, uGroundD: { value: -1e9 }, uFlameV: { value: new THREE.Vector3() }, uFlameI: { value: 0 }, uFlameCol: { value: new THREE.Color(1, 0.55, 0.2) }, uTint: { value: new THREE.Color(1, 1, 1) }, uHeatCol: { value: new THREE.Color(1, 0.32, 0.06) },
       },
       vertexShader: /* glsl */`
@@ -111,7 +111,7 @@ export class Smoke {
           gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: /* glsl */`
-        uniform sampler2D tA, tB, tDet; uniform vec3 uSunCol, uAmb, uSunV, uGndCol, uFlameCol, uTint, uHeatCol;
+        uniform sampler2D tA, tB, tDet; uniform vec3 uSunCol, uAmb, uSunV, uGndCol, uFlameCol, uTint, uHeatCol; uniform float uStyle;
         varying vec2 vUv, vCell, vOff; varying float vA, vH, vGround, vSoot, vDet; varying vec3 vLit, vSunS, vUpS, vFdS; varying float vFl;
         vec3 lA, lB;
         // the baked puff lit from direction L (toward the light): the six lightings, weighted by L's components squared
@@ -129,6 +129,10 @@ export class Smoke {
           float rim = 1.0 - smoothstep(0.45, 0.95, A.a);
           float al = clamp((A.a + (hd - 0.42) * 0.9 * rim - 0.06) * 1.25, 0.0, 1.0);
           float a = al * vA * smoothstep(0.0, 1.0, clamp(vGround, 0.0, 1.0));
+          // toon styles (uStyle 1 toon, 2 soft toon): a crisp silhouette cut from the soft baked shape (sharp at any size,
+          // like a distance field), and a puff fades by shrinking into itself rather than turning see-through
+          float th = 0.5 + (1.0 - vA) * 0.42;
+          if (uStyle > 0.5) a = smoothstep(th - 0.025, th + 0.025, al) * smoothstep(0.0, 1.0, clamp(vGround * 3.0, 0.0, 1.0));
           if (a < 0.003) discard;
           vec2 gd = (q1.gb - 0.5) * 0.65 + (q2.gb - 0.5) * 0.35 * 2.37;   // the bumps' slope, in the puff's own frame
           vec4 B = texture2D(tB, uv);
@@ -156,6 +160,25 @@ export class Smoke {
           // too (light scattered inside the steam): golden close in, deep orange farther out
           vec3 warm = mix(uFlameCol, vec3(1.0, 0.56, 0.22), 0.6);
           col += mix(vec3(1.0, 0.42, 0.1), warm, smoothstep(1.0, 9.0, vFl)) * vFl * (0.15 + 0.85 * vLit.z) * (0.3 + six(vFdS)) * 2.6 * alb;
+          if (uStyle > 0.5) {
+            // flat tones by how much sun reaches each part: the cloud's own shadow and the lobes turned away (the fine
+            // bumps only nudge the bands, or the lit faces break up into speckle)
+            // (the cloud's own shadow deepened for the bands: as with light that goes about twice as deep a shade per metre)
+            float sS = pow(vLit.x, 1.8) * six(vSunS) * min(phase, 4.0) * mix(1.0, bump * crease, 0.25);
+            float bnd = uStyle > 1.5
+              ? smoothstep(0.25, 0.55, sS) * 0.45 + smoothstep(0.75, 1.1, sS) * 0.55          // soft toon: short gradients
+              : smoothstep(0.3, 0.34, sS) * 0.5 + smoothstep(0.7, 0.76, sS) * 0.5;            // toon: three crisp tones
+            // warm white tops, light grey between, cool blue-grey shadow: the colours keep the shapes apart
+            float K = 0.95 / 3.14159;
+            vec3 litC = K * (uSunCol * 1.15 + uAmb * 0.9) * alb, midC = K * (uSunCol * 0.62 + uAmb * 1.0) * alb * vec3(0.97, 0.98, 1.0);
+            vec3 shC = K * (uSunCol * 0.2 + uAmb * (0.6 + 0.3 * Tk) + uGndCol * 0.3) * alb * vec3(0.95, 0.96, 1.03);
+            vec3 tc = bnd < 0.5 ? mix(shC, midC, bnd * 2.0) : mix(midC, litC, bnd * 2.0 - 1.0);
+            // the fire's light in two flat steps, orange then gold, on the lobes that face it, in place of the white
+            float fg = vFl * (0.15 + 0.85 * vLit.z) * six(vFdS) * mix(1.0, crease, 0.3) * 3.4 + smoothstep(0.2, 0.3, vH) * 2.0;
+            float fq = 0.5 * smoothstep(0.25, 0.32, fg) + 0.5 * smoothstep(1.1, 1.25, fg);
+            vec3 fireC = dot(litC, vec3(0.2126, 0.7152, 0.0722)) * mix(vec3(1.25, 0.5, 0.14), vec3(1.6, 1.05, 0.5), step(0.75, fq));
+            col = mix(tc, fireC, min(1.0, fq * 2.0) * 0.9);
+          }
           gl_FragColor = vec4(col, min(1.0, a));
         }`,
     });
