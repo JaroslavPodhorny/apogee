@@ -19,7 +19,13 @@ import { universes, currentUniverse, setCurrentUniverse, createUniverse, deleteU
 const $ = (id) => document.getElementById(id);
 const canvas = $('c');
 const thumbs = renderThumbnails();
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); } catch (err) {
+  window.apogeeFail?.('Your browser could not start WebGL 2, which Apogee needs.', ' Close every window of the browser and open it again: after a graphics crash Chrome turns WebGL off for a site until it restarts. Check that hardware acceleration is on in the browser settings, and that the graphics driver is up to date.');
+  throw err;
+}
+// the GPU or its driver stopped the game (a crash or a reset): say so instead of freezing on a blank picture
+canvas.addEventListener('webglcontextlost', () => window.apogeeFail?.('The graphics driver stopped the game.', ' Reload the page. If it happens again, choose a lower quality in Graphics, and make sure the graphics driver is up to date.'));
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setClearColor(0x000000, 1);
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;

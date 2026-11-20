@@ -173,7 +173,18 @@
     <div class="photo-notes"><span class="photo-mouse-hint">Drag to orbit · Shift-drag to reframe · Scroll to move closer</span><span class="photo-touch-hint">Drag to orbit · Use two fingers to reframe and zoom</span><span id="photo-status" role="status"></span></div>
   </footer>
 </dialog>
-<div id="boot"><span>Apogee</span></div>
+<div id="boot"><span>Apogee</span><p id="boot-msg" hidden></p></div>
+<script>
+  // never leave a silent loading screen: say what went wrong (the page cannot load, WebGL is off, the GPU stopped)
+  window.apogeeFail = (title, detail) => {
+    let b = document.getElementById('boot');
+    if (!b) { b = document.createElement('div'); b.id = 'boot'; b.innerHTML = '<span>Apogee</span><p id="boot-msg"></p>'; document.body.appendChild(b); }
+    const m = document.getElementById('boot-msg'); m.hidden = false;
+    m.innerHTML = '<b></b><br>'; m.firstChild.textContent = title; m.appendChild(document.createTextNode(detail || ''));
+  };
+  const onErr = (e) => { const m = document.getElementById('boot-msg'); if (document.getElementById('boot') && (!m || m.hidden)) window.apogeeFail('Apogee could not start.', ' ' + ((e.reason || e.error || e).message || e.message || e)); };
+  window.addEventListener('error', onErr); window.addEventListener('unhandledrejection', onErr);
+</script>
 <script type="module" src="src/main.js"></script>
 </body>
 </html>
