@@ -91,7 +91,7 @@ export class Smoke {
           vPx = iData.x * uPxK / max(-mv.z, 0.1);   // how many pixels across the puff is on screen
           // the flame lights the smoke round the pad: the 1/d² of a point light, softened by the puff's own size
           vec3 dF = uFlameV - mv.xyz; float d2 = dot(dF, dF);
-          vFl = uFlameI / (d2 * 0.7 + iData.x * iData.x * 0.08 + 1.0) * exp(-sqrt(d2) / 45.0);   // the steam itself scatters the glow away: it stays round the base
+          vFl = uFlameI / (d2 * 0.5 + iData.x * iData.x * 0.08 + 1.0) * exp(-sqrt(d2) / 110.0);   // the steam scatters the glow on, dimming it slowly: the whole lower cloud is fire-lit
           vFl /= 1.0 + vFl * 0.05;   // soft cap: right by the flame it would burn out to flat white
           float c = cos(iData.w), s = sin(iData.w); mat2 m = mat2(c, -s, s, c);
           // a puff racing along stretches out along its path on screen, so a jet reads as one flowing stream
@@ -146,14 +146,18 @@ export class Smoke {
           // large scale: the light that got here through the rest of the cloud (CPU-marched, per puff); a softer copy
           // stands in for light scattered many times inside, so the shadows are blue-grey, not black
           float Ts = vLit.x, Tk = vLit.y;
-          float sunT = Ts * 0.75 + 0.25 * pow(Ts, 0.3) * 0.5;
+          // shading in broad, soft masses, as real billows are: the cloud shades itself a little deeper, and the fine
+          // bumps and creases below only touch the light (at full strength they mottled every face rough)
+          float Tsd = pow(Ts, 1.5);
+          float sunT = Tsd * 0.75 + 0.25 * pow(Tsd, 0.3) * 0.5;
           // forward scattering: thin rims blaze when the sun is behind the smoke
           float cs = -uSunV.z, phase = 0.8 * hg(0.05, cs) + 0.2 * hg(0.6, cs);
           float bump = clamp(1.0 - dot(gd, vSunS.xy) * 2.6, 0.3, 1.8);          // each bump lit on its sunward side
           float crease = 0.5 + 0.5 * smoothstep(0.12, 0.7, hd);                // and dark in the creases between them
-          vec3 sun = uSunCol * sunT * six(vSunS) * min(phase, 4.0) * 1.9 * bump * crease;   // (the baked puffs average darker than a matte ball: match the sky's clouds)
+          float bumpR = mix(1.0, bump, 0.3), creaseR = mix(1.0, crease, 0.35);
+          vec3 sun = uSunCol * sunT * six(vSunS) * min(phase, 4.0) * 1.9 * bumpR * creaseR;   // (the baked puffs average darker than a matte ball: match the sky's clouds)
           float side = (lA.r + lA.g + lB.g + lB.b) * 0.25;
-          vec3 sky = uAmb * (0.2 + 0.8 * Tk) * (0.6 * six(vUpS) + 0.4 * side) * crease;
+          vec3 sky = uAmb * (0.2 + 0.8 * Tk) * (0.6 * six(vUpS) + 0.4 * side) * creaseR;
           vec3 gnd = uGndCol * six(-vUpS) * (0.4 + 0.6 * Tk);
           // sooty smoke (burning propellant) is dark grey-brown, exhaust and steam white
           vec3 alb = uTint * mix(vec3(0.96, 0.95, 0.94), vec3(0.11, 0.1, 0.09), vSoot);
@@ -165,7 +169,8 @@ export class Smoke {
           // lit by the flame, most on the side and the parts of the cloud it can reach, but glowing through the rest
           // too (light scattered inside the steam): golden close in, deep orange farther out
           vec3 warm = mix(uFlameCol, vec3(1.0, 0.56, 0.22), 0.6);
-          col += mix(vec3(1.0, 0.42, 0.1), warm, smoothstep(1.0, 9.0, vFl)) * vFl * (0.15 + 0.85 * vLit.z) * (0.3 + six(vFdS)) * 2.6 * alb;
+          // (strong: by the flame the steam is lit yellow-white from inside, and orange light carries far through it)
+          col += mix(vec3(1.0, 0.42, 0.1), mix(warm, vec3(1.0, 0.8, 0.5), 0.5), smoothstep(1.0, 9.0, vFl)) * vFl * (0.25 + 0.75 * vLit.z) * (0.6 + six(vFdS)) * 3.2 * alb;
           if (uStyle > 0.5) {
             // flat tones by how much sun reaches each part: the cloud's own shadow and the lobes turned away (the fine
             // bumps only nudge the bands, or the lit faces break up into speckle)
