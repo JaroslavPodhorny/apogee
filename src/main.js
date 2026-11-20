@@ -21,14 +21,17 @@ const $ = (id) => document.getElementById(id);
 // (a timer as well as a frame: a background tab gets no frames, and loading must not stall there)
 const step = (label, k) => { window.apogeeStep?.(label, k); return new Promise((r) => { requestAnimationFrame(() => setTimeout(r, 0)); setTimeout(r, 100); }); };
 const canvas = $('c');
-await step('Drawing the parts', 0.15);
-const thumbs = renderThumbnails();
-await step('Starting the graphics', 0.3);
-let renderer;
-try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); } catch (err) {
-  window.apogeeFail?.('Your browser could not start WebGL 2, which Apogee needs.', ' Close every window of the browser and open it again: after a graphics crash Chrome turns WebGL off for a site until it restarts. Check that hardware acceleration is on in the browser settings, and that the graphics driver is up to date.');
+// no WebGL at all: say why it usually happens and what to do (both contexts below can fail this way)
+const noWebGL = (err) => {
+  window.apogeeFail?.('Your browser could not start WebGL 2, which Apogee needs.', ' Close every window of the browser (on Windows also quit it from the tray by the clock) and open it again: after a graphics crash Chrome turns WebGL off for a site until it restarts. If that does not help, check that hardware acceleration is on in the browser settings and that chrome://gpu shows WebGL2 as hardware accelerated, or try another browser.');
   throw err;
-}
+};
+await step('Starting the graphics', 0.15);
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); } catch (err) { noWebGL(err); }
+await step('Drawing the parts', 0.3);
+let thumbs;
+try { thumbs = renderThumbnails(); } catch (err) { noWebGL(err); }
 // the GPU or its driver stopped the game (a crash or a reset): say so instead of freezing on a blank picture
 canvas.addEventListener('webglcontextlost', () => window.apogeeFail?.(`The graphics driver stopped the game (during: ${window.apogeeAt || 'loading'}).`, ' Reload the page. If it happens again, choose a lower quality in Graphics, and make sure the graphics driver is up to date.'));
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
