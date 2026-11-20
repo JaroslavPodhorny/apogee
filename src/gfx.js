@@ -36,8 +36,8 @@ export function setGfx(patch) {
 // ---------- the panel ----------
 const ROWS = [
   ['preset', 'Quality', [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['ultra', 'Ultra']]],
-  ['res', 'Resolution', [['auto', 'Auto'], [0.5, '50%'], [0.75, '75%'], [1, '100%']], 'Auto lowers it when the frame rate drops'],
-  ['sky', 'Sky & ground', [[0.45, 'Low'], [0.5, 'Medium'], [0.6, 'High'], [0.8, 'Ultra']], 'Detail of the atmosphere, clouds and terrain'],
+  ['res', 'Rocket & effects', [['auto', 'Auto'], [0.5, '50%'], [0.75, '75%'], [1, '100%']], 'Sharpness of the rocket, the pad, smoke and flames. The sky and ground have their own setting, so this costs little. Auto lowers it when the frame rate drops'],
+  ['sky', 'Sky & ground', [[0.45, 'Low'], [0.5, 'Medium'], [0.6, 'High'], [0.8, 'Ultra']], 'Detail of the atmosphere, clouds and terrain: the most expensive part of the frame'],
   ['shadows', 'Shadows', [[0, 'Off'], [1024, 'Low'], [2048, 'High'], [4096, 'Ultra']]],
   ['msaa', 'Anti-aliasing', [[0, 'Off'], [4, 'On']]],
   ['clouds', 'Volumetric clouds', [[false, 'Off'], [true, 'On']], 'Real 3D cumulus you can fly through'],

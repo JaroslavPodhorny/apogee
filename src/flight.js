@@ -850,10 +850,10 @@ export class Flight {
             cs = clamp(cs + (cs - c.rgb) * uSharp, lo, hi);
             c.rgb = cs;
             float cloud = 1.0 - c.a;
-            vec3 mn = c.rgb, mx = c.rgb, m2 = vec3(0.0);
+            vec3 mn = c.rgb, mx = c.rgb;
             for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
-              vec3 v = texture2D(tCur, vUv + vec2(i, j) * uTexel).rgb; mn = min(mn, v); mx = max(mx, v); m2 += v;
-              cloud = max(cloud, 1.0 - texture2D(tCur, vUv + vec2(i, j) * uTexel).a);
+              vec4 v = texture2D(tCur, vUv + vec2(i, j) * uTexel); mn = min(mn, v.rgb); mx = max(mx, v.rgb);
+              cloud = max(cloud, 1.0 - v.a);
             }
             vec3 outc = c.rgb;
             if (uValid > 0.5 && cloud > 0.002) {
